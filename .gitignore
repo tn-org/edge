@@ -1,0 +1,20 @@
+# Environment
+.env
+
+# Config rendered from .env (Traefik static config, CrowdSec LAPI key)
+traefik/generated/
+
+# ACME certificate store (secret; Traefik creates acme.json with mode 600)
+traefik/acme/
+
+# Allowlisted IPs and the CrowdSec whitelist built from them (operational state)
+crowdsec/generated/
+
+# Config hash used by deploy-host.sh, and the pending-reboot timestamp
+.state/
+
+# Logs
+logs/
+
+# OS
+.DS_Store

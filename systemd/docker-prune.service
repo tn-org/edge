@@ -1,0 +1,20 @@
+# Weekly cleanup of unused docker images
+# Installed to: /etc/systemd/system/docker-prune.service
+#
+# setup-docker-prune.sh replaces /path/to/edge with the real path.
+# Started by docker-prune.timer; failures are reported through notify-failure@.
+
+[Unit]
+Description=Remove unused docker images
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/edge
+# .env is optional; the script's defaults work without it
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/docker-prune.sh
+TimeoutStartSec=600

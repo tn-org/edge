@@ -1,0 +1,34 @@
+# Rotation for the Traefik access log
+# Installed to: /etc/logrotate.d/traefik
+# setup-logs.sh replaces /path/to/edge with the real path.
+
+/path/to/edge/logs/traefik/*.log {
+    # The parent log directory is owned by the deploy user rather than root, and without
+    # an su line logrotate 3.18+ refuses it as "insecure permissions". Run it as root.
+    su root root
+    daily
+    # Keep one year. Compressed daily volume is small, and attack patterns only become
+    # visible over months, so 30 days is too short.
+    rotate 365
+    compress
+    delaycompress
+    missingok
+    notifempty
+    dateext
+    dateformat -%Y%m%d
+    create 0644 root root
+    sharedscripts
+    postrotate
+        # Traefik reopens its log file on USR1. Without the signal it keeps writing to the
+        # old inode and the new file stays empty.
+        docker kill -s USR1 edge-traefik 2>/dev/null || true
+
+        # Search terms travel in GET query strings, so RequestPath (which includes the
+        # query) can hold personal data in plain text for a year. Strip it before
+        # compression so only the current, not yet rotated file keeps the raw value.
+        # A single access log cannot use a different format per domain, so it is handled
+        # here instead.
+        find /path/to/edge/logs/traefik -maxdepth 1 -name '*.log-*' ! -name '*.gz' \
+          -exec sed -i -E 's/("RequestPath":"[^"?]*)\?[^"]*"/\1"/g' {} +
+    endscript
+}

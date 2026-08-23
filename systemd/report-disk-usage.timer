@@ -1,0 +1,16 @@
+# Daily record of disk usage per directory
+# Installed to: /etc/systemd/system/report-disk-usage.timer
+# 08:30 Asia/Tokyo, early enough for the breakdown to be ready before the ops console takes
+# its capacity snapshot. Persistent catches up runs missed while the machine was off.
+
+[Unit]
+Description=Record disk usage per directory
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=300
+Unit=report-disk-usage.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,15 @@
+# Daily abuse blocking report
+# Installed to: /etc/systemd/system/report-bans.timer
+# Reports the last 24 hours at 08:00 Asia/Tokyo. Persistent catches up missed runs.
+
+[Unit]
+Description=Abuse blocking record
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=300
+Unit=report-bans.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,106 @@
+# Traefik v3 static config (template).
+#
+# What Traefik actually reads is traefik/generated/traefik.yml, written by
+# scripts/render-config.sh with the .env values substituted in. Traefik accepts its static
+# config from exactly one of file, environment or arguments, and does not expand
+# environment variables inside the file. Values that differ per host (ACME_EMAIL,
+# EDGE_NETWORK) therefore cannot live here directly and are left as placeholders.
+#
+# Dynamic config (routers, middlewares) arrives from two places:
+#   - docker provider: the compose labels of each application; edge declares nothing here
+#   - file provider:   traefik/dynamic/*.yml, the host-wide middlewares and TLS settings
+
+global:
+  # Do not phone home for a version check on every start.
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  # Traefik's own log goes to stdout (docker json-file, capped at 10m x 3 by compose).
+  level: INFO
+
+# The only input CrowdSec reads. It has to be JSON, or the crowdsecurity/traefik parser
+# cannot interpret it.
+#
+# Note: RequestPath includes the query string. Since search terms (which may contain
+# personal data) travel in GET requests, the postrotate step in logrotate/traefik strips
+# the query before compression.
+accessLog:
+  filePath: /var/log/traefik/access.log
+  format: json
+  # Do not buffer, so blocking reacts immediately (one line written at a time).
+  bufferingSize: 0
+  fields:
+    defaultMode: keep
+    headers:
+      # Drop headers by default. User-Agent is kept because scenarios such as
+      # bad-user-agent rely on it.
+      defaultMode: drop
+      names:
+        User-Agent: keep
+
+api:
+  dashboard: true
+  # No public router. To look at it, enable 127.0.0.1:8080 in compose and the traefik
+  # entryPoint below, then reach it through an SSH port forward.
+  insecure: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      # ACME http-01 challenges are handled internally before this, so they are not
+      # redirected.
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    http:
+      # Applied to every router by default. Middlewares added by an application's labels
+      # run after these.
+      # Order: blocking, headers, rate limit, concurrency limit.
+      middlewares:
+        - crowdsec-bouncer@file
+        - security-headers@file
+        - ratelimit-default@file
+        - inflight-default@file
+      tls:
+        # Default resolver, so applications get a certificate without naming one in labels.
+        certResolver: letsencrypt
+  # For the dashboard (disabled by default; also enable api.insecure and the compose port).
+  # traefik:
+  #   address: ":8080"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    # Expose only containers that opt in through labels, so nothing reaches the internet
+    # by forgetting a label.
+    exposedByDefault: false
+    # Always connect to the container's IP on this network, even when it belongs to
+    # several. The real name comes from EDGE_NETWORK in .env (substituted by
+    # render-config.sh).
+    network: __EDGE_NETWORK__
+    watch: true
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: __ACME_EMAIL__
+      storage: /acme/acme.json
+      httpChallenge:
+        entryPoint: web
+
+experimental:
+  plugins:
+    # Applies CrowdSec decisions as Traefik middleware.
+    # The middleware itself is configured in traefik/dynamic/middlewares.yml.
+    crowdsec-bouncer:
+      moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+      version: v1.4.5

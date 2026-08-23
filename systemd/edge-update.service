@@ -1,0 +1,26 @@
+# Automatic update of edge (follow origin, then apply the host layer)
+# Installed to: /etc/systemd/system/edge-update.service
+#
+# setup-update.sh replaces /path/to/edge with the real path and __RUN_AS__ with the user
+# that owns the repo.
+# Started by edge-update.timer; failures are reported through notify-failure@.
+#
+# It runs as the repo owner rather than root, because git refuses a repo owned by another
+# user as "dubious ownership". Host-level actions (docker, systemctl) use sudo further
+# down inside the scripts.
+
+[Unit]
+Description=Update edge (follow origin, apply the host layer)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+User=__RUN_AS__
+WorkingDirectory=/path/to/edge
+# .env is optional; the Makefile defaults work without it
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/usr/bin/make update
+TimeoutStartSec=900

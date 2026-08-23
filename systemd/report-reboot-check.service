@@ -1,0 +1,14 @@
+# Detect a pending reboot after a kernel update
+# Installed to: /etc/systemd/system/report-reboot-check.service
+# setup-reboot-check.sh replaces /path/to/edge with the real path.
+
+[Unit]
+Description=Pending reboot check
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/edge
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/report.sh reboot-check
+TimeoutStartSec=120

@@ -1,0 +1,19 @@
+# Host state sync
+# Installed to: /etc/systemd/system/host-sync.service
+# setup-host-sync.sh replaces /path/to/edge with the real path.
+#
+# Sends the state of everything the ops console container cannot reach (CrowdSec blocks,
+# systemd, reboots) to the console, and runs the operations queued from its screens.
+
+[Unit]
+Description=Host state sync and operation execution
+# CrowdSec is a docker container, so wait until docker is up
+After=docker.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/edge
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/report.sh host-sync
+TimeoutStartSec=180

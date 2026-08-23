@@ -1,0 +1,60 @@
+# Host-wide middlewares (file provider).
+#
+# entryPoints.websecure.http.middlewares in traefik/traefik.yml applies these to every
+# router. Middlewares added by an application's labels run after them. An application that
+# needs different values defines its own middleware under a different name and references
+# that.
+
+http:
+  middlewares:
+    # -------------------------------------------------------------------------
+    # Applies CrowdSec decisions: asks the LAPI and returns 403 while an IP is blocked.
+    #
+    # CROWDSEC_BOUNCER_KEY in .env is the source of truth for the LAPI key. Dynamic config
+    # files do not expand environment variables, so scripts/render-config.sh writes the key
+    # to a file and only its path is given here (the plugin's crowdsecLapiKeyFile option).
+    #
+    # forwardedHeadersTrustedIPs is deliberately unset. edge is hit directly from the
+    # internet, so trusting a client-supplied X-Forwarded-For would let anyone walk past
+    # a block.
+    # -------------------------------------------------------------------------
+    crowdsec-bouncer:
+      plugin:
+        crowdsec-bouncer:
+          enabled: "true"
+          logLevel: INFO
+          # live = query the LAPI on every request (same host, so the round trip is
+          # a few hundred microseconds)
+          crowdsecMode: live
+          crowdsecLapiScheme: http
+          crowdsecLapiHost: crowdsec:8080
+          crowdsecLapiKeyFile: /run/secrets/crowdsec-lapi-key
+
+    # -------------------------------------------------------------------------
+    # Rate limit. Requests over the limit get a 429. The threshold sits well above
+    # measured legitimate use, and the burst allowance passes normal page loads and
+    # parallel asset fetches straight through.
+    # -------------------------------------------------------------------------
+    ratelimit-default:
+      rateLimit:
+        average: 30
+        period: 1s
+        burst: 100
+
+    # Upper bound on requests being processed at once. Overflow gets a 429 (Traefik
+    # default).
+    inflight-default:
+      inFlightReq:
+        amount: 100
+
+    # -------------------------------------------------------------------------
+    # Security headers. HSTS is one year without includeSubDomains.
+    #
+    # frameDeny is intentionally left out: it can break admin screens and future embeds,
+    # so opt into it per application instead.
+    # -------------------------------------------------------------------------
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        referrerPolicy: strict-origin-when-cross-origin

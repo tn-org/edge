@@ -1,0 +1,14 @@
+# CrowdSec acquisition. Mounted at /etc/crowdsec/acquis.yaml inside the container.
+#
+# The only input is the single Traefik JSON access log. The destination of each request is
+# in the RequestHost field, so there is no need for one file per virtual host.
+#
+# "type: traefik" is the parser name provided by the crowdsecurity/traefik collection.
+# If it does not match, every line fails to parse and CrowdSec keeps running quietly
+# without ever creating a decision. When setting up a host, always confirm the read counts
+# in the acquisition rows of `cscli metrics`.
+
+filenames:
+  - /var/log/traefik/access.log
+labels:
+  type: traefik

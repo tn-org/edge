@@ -1,0 +1,19 @@
+# Weekly cleanup of unused docker images
+# Installed to: /etc/systemd/system/docker-prune.timer
+#
+# Fires every Sunday at 06:00 Asia/Tokyo. Persistent=true catches up a window missed while
+# the machine was off. It runs after the weekly image refresh so that the versions it
+# superseded are cleared in the same pass.
+
+[Unit]
+Description=Remove unused docker images
+
+[Timer]
+OnCalendar=Sun *-*-* 06:00:00 Asia/Tokyo
+Persistent=true
+# Spread the start time to avoid a load spike
+RandomizedDelaySec=600
+Unit=docker-prune.service
+
+[Install]
+WantedBy=timers.target

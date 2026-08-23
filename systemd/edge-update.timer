@@ -1,0 +1,19 @@
+# Automatic update of edge
+# Installed to: /etc/systemd/system/edge-update.timer
+#
+# Runs `make update` daily at 05:00 Asia/Tokyo. Persistent=true catches up a window missed
+# while the machine was off. Not enabled by default; the unit is only installed.
+# On hosts that should follow automatically: sudo systemctl enable --now edge-update.timer
+
+[Unit]
+Description=Update edge (follow origin, apply the host layer)
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 Asia/Tokyo
+Persistent=true
+# Spread the start time so that many hosts do not fetch at the same moment
+RandomizedDelaySec=900
+Unit=edge-update.service
+
+[Install]
+WantedBy=timers.target

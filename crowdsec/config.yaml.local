@@ -1,0 +1,22 @@
+# Overrides for the CrowdSec main config. Mounted at /etc/crowdsec/config.yaml.local
+# inside the container.
+#
+# CrowdSec reads config.yaml and then merges any file with the same name plus .local over
+# it. Replacing the image's config.yaml wholesale would mean owning its default paths and
+# database settings too, which makes image updates hard to follow, so use this instead.
+#
+# Only put things here that should differ from the image defaults.
+
+common:
+  log_media: stdout
+  log_level: info
+
+prometheus:
+  # Metrics are read with cscli metrics; nothing scrapes from outside, so do not listen.
+  enabled: false
+
+db_config:
+  flush:
+    # Retention for resolved alerts. The permanent record lives in the ops console, so
+    # CrowdSec can keep a short window (once a decision is gone, the block is lifted).
+    max_age: 30d

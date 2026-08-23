@@ -1,0 +1,15 @@
+# Daily abuse blocking report
+# Installed to: /etc/systemd/system/report-bans.service
+# setup-bans.sh replaces /path/to/edge with the real path.
+
+[Unit]
+Description=Abuse blocking record
+# CrowdSec is a docker container, so wait until docker is up
+After=docker.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/edge
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/report.sh bans

@@ -1,0 +1,16 @@
+# Host state sync
+# Installed to: /etc/systemd/system/host-sync.timer
+# Every 5 minutes. Unblock requests and scheduled-job actions from the console screens are
+# picked up here, so this interval is how long a click takes to take effect.
+
+[Unit]
+Description=Host state sync and operation execution
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=host-sync.service
+
+[Install]
+WantedBy=timers.target
