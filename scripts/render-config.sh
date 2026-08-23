@@ -55,14 +55,17 @@ render_allowlist() {
     if [ "${#ips[@]}" -gt 0 ]; then
       echo "  ip:"
       for ip in "${ips[@]}"; do printf '    - "%s"\n' "$ip"; done
-    else
-      echo "  ip: []"
     fi
     if [ "${#cidrs[@]}" -gt 0 ]; then
       echo "  cidr:"
       for ip in "${cidrs[@]}"; do printf '    - "%s"\n' "$ip"; done
-    else
-      echo "  cidr: []"
+    fi
+    # CrowdSec refuses to start on a whitelist node with no ip/cidr/expression
+    # ("Node is empty or invalid"). With an empty allowlist, emit an expression that
+    # never matches so the file stays valid.
+    if [ "${#ips[@]}" -eq 0 ] && [ "${#cidrs[@]}" -eq 0 ]; then
+      echo "  expression:"
+      echo '    - "false"'
     fi
   } > "$ALLOW_YAML.tmp"
   mv "$ALLOW_YAML.tmp" "$ALLOW_YAML"

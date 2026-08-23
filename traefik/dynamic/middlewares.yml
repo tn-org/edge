@@ -23,9 +23,12 @@ http:
         crowdsec-bouncer:
           enabled: "true"
           logLevel: INFO
-          # live = query the LAPI on every request (same host, so the round trip is
-          # a few hundred microseconds)
-          crowdsecMode: live
+          # stream = pull the decision list from the LAPI periodically and answer
+          # from the local copy. Unlike live mode, requests keep flowing when
+          # CrowdSec is down or restarting (live mode answers 403 to everything
+          # while the LAPI is unreachable, which took the whole host down once).
+          crowdsecMode: stream
+          updateIntervalSeconds: 30
           crowdsecLapiScheme: http
           crowdsecLapiHost: crowdsec:8080
           crowdsecLapiKeyFile: /run/secrets/crowdsec-lapi-key
