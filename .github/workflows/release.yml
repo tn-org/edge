@@ -81,7 +81,7 @@ jobs:
           echo "instances=$json" >> "$GITHUB_OUTPUT"
           echo "対象ホスト: $json"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.configured.outputs.configured == 'true'
         with:
           fetch-depth: 1
