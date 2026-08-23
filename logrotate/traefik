@@ -1,0 +1,34 @@
+# Traefik アクセスログのローテーション設定
+# 配置先: /etc/logrotate.d/traefik
+# setup-logs.sh が /path/to/edge を実パスに置換する。
+
+/path/to/edge/logs/traefik/*.log {
+    # ログ親ディレクトリが root 以外(ssm-user)所有のため、su 指定が無いと
+    # logrotate 3.18+ が "insecure permissions" で拒否する。root で回す。
+    su root root
+    daily
+    # 1 年保持。圧縮後で日 150KB 程度（2026-08 時点の nginx 実績）なので年間でも 60MB 前後。
+    # 攻撃の傾向は数か月単位で見ないと分からないため、30 日では短すぎた
+    rotate 365
+    compress
+    delaycompress
+    missingok
+    notifempty
+    dateext
+    dateformat -%Y%m%d
+    create 0644 root root
+    sharedscripts
+    postrotate
+        # Traefik は USR1 でログファイルを開き直す。送らないと切り替え前の
+        # inode に書き続け、新しいファイルが空のままになる
+        docker kill -s USR1 edge-traefik 2>/dev/null || true
+
+        # 管理画面は検索語（顧客のメールアドレス）を GET のクエリに載せる。
+        # Traefik の RequestPath はクエリ込みなので、そのままだと平文の PII が 1 年ぶん残る。
+        # 圧縮前に落とし、生で残るのを当日ぶん（回転前のファイル）だけに抑える。
+        # nginx 時代は console の vhost だけ log_format を分けて落としていたが、
+        # Traefik はログが 1 本でドメイン別の書式を持てないためここで処理する
+        find /path/to/edge/logs/traefik -maxdepth 1 -name '*.log-*' ! -name '*.gz' \
+          -exec sed -i -E 's/("RequestPath":"[^"?]*)\?[^"]*"/\1"/g' {} +
+    endscript
+}

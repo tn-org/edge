@@ -1,0 +1,15 @@
+# 汎用 OnFailure 通知サービス（テンプレートユニット）
+# 配置先: /etc/systemd/system/notify-failure@.service
+#
+# 他ユニットの OnFailure=notify-failure@%n.service から呼ばれ、
+# 失敗したユニット名(%i)を notify.sh に渡す。
+# 通知ハブ（console /internal/notify）へ届かない場合は journald に残るのみ。
+
+[Unit]
+Description=失敗通知: %i
+
+[Service]
+Type=oneshot
+# .env は任意。通知ハンドラ自身が .env 不在で失敗しないよう '-' を付ける
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/notify.sh --failed %i

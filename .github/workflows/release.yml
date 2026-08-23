@@ -1,0 +1,160 @@
+name: release
+
+# 発火設計:
+#   main への push で自動起動する唯一の workflow。
+#   自分より新しい commit が main にあれば guard job が数秒で退出する（連続 push の畳み込み）。
+#   進むときだけ SSM でサーバーへ反映する。
+#
+# この repo はホスト層（Traefik / CrowdSec / systemd / logrotate / auto-patch）だけを持ち、
+# 全ホストで同じ中身を使う。ビルド成果物が無いので、反映は「git の追従」と「compose の反映」で足りる。
+# ルーティングと証明書は Traefik が自分で面倒を見るため、ここでの作業は無い。
+# 運用コンソール（console）は各プロジェクトの repo が自分でデプロイする。
+#
+# 対象ホストは repo variable SSM_INSTANCE_IDS（空白区切り）で決まる。
+# 1 行足せばそのホストにも同じ反映が流れる（deploy job を matrix で展開する）。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# run をキャンセルしても、発行済みの SSM コマンドはサーバー上で走り続ける（CancelCommand を
+# 呼ぶ口が無い）。キャンセルすると後続の git reset --hard が先行デプロイの足元でファイルを
+# 差し替える。走らせきってから次を始める。
+# 連続 push で run が積み上がっても、pending は GitHub 側が 1 本に畳み、
+# さらに残った run も guard job が先端でなければ即抜けるので実害は数秒 × 本数で済む。
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # job1: 未設定ガード + 畳み込みガード。
+  #   どちらかに引っかかれば以降を全部 skip する
+  #
+  # 未設定ガード:
+  #   clone しただけの新しいホスト用 repo は secrets / variables が空なので、
+  #   初 push で SSM を叩きにいかず notice を出して退出する。設定が済めば以降は自動で流れる。
+  #
+  # 失敗時の再実行について:
+  #   「Re-run failed jobs」で落ちた job 以降だけを流し直せるが、再実行でも guard は
+  #   「自分が main の先端か」を見直す。その間に別の push が入っていると退出して何もしない。
+  #   そのときは新しい先端の run を使うか、先に進めたい場合だけ workflow_dispatch で起動する。
+  # ---------------------------------------------------------------------------
+  guard:
+    runs-on: ubuntu-latest
+    # checkout（浅い）+ git fetch だけ。数秒で終わる
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+      instances: ${{ steps.configured.outputs.instances }}
+    steps:
+      # secrets / vars コンテキストは job の if: では読めないので、step の env 経由で空判定する
+      - name: デプロイ設定が済んでいるか
+        id: configured
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+          SSM_INSTANCE_IDS: ${{ vars.SSM_INSTANCE_IDS }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${AWS_ROLE_ARN:-}" ] || missing="$missing AWS_ROLE_ARN(secret)"
+          [ -n "${SSM_INSTANCE_IDS:-}" ] || missing="$missing SSM_INSTANCE_IDS(variable)"
+          if [ -n "$missing" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "instances=[]" >> "$GITHUB_OUTPUT"
+            echo "::notice::デプロイ設定が未完了のため何もせず退出する（未設定:$missing）。README「新しいホストを立てる」を参照"
+            exit 0
+          fi
+          # 空白区切りの一覧を matrix 用の JSON 配列にする（jq に依存しない）
+          json="["; sep=""
+          for id in $SSM_INSTANCE_IDS; do
+            json="$json$sep\"$id\""
+            sep=","
+          done
+          json="$json]"
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "instances=$json" >> "$GITHUB_OUTPUT"
+          echo "対象ホスト: $json"
+
+      - uses: actions/checkout@v4
+        if: steps.configured.outputs.configured == 'true'
+        with:
+          fetch-depth: 1
+
+      - name: main の先端かどうか
+        id: check
+        if: steps.configured.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin main
+          TIP=$(git rev-parse FETCH_HEAD)
+          echo "this run: $GITHUB_SHA"
+          echo "origin/main: $TIP"
+          if [ "$GITHUB_SHA" = "$TIP" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "先端なのでリリースを続ける"
+          else
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::より新しい commit ($TIP) が main にあるため、この run は何もせず退出する"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # job2: 各ホストへ反映
+  #   checkout 追従（git reset）→ deploy-host.sh（設定生成 → compose up -d）。
+  #   静的設定が変わったときだけコンテナを入れ替える（判定は deploy-host.sh 側）。
+  #   systemd / logrotate は setup 系スクリプトの一度きり作業なので対象外。
+  #   変更したときはサーバーで `make host-apply` を手で流す。
+  #
+  #   ホストは SSM_INSTANCE_IDS の並びぶんだけ matrix で展開する。置き場は全ホスト共通で
+  #   /app/edge（ホストごとに変える理由が無いので変数にしない）。
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      # ホスト間に依存は無い。1 台が落ちても残りは反映しきる（落ちた台だけ再実行できる）
+      fail-fast: false
+      matrix:
+        instance: ${{ fromJson(needs.guard.outputs.instances) }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ap-northeast-1
+      RUN_AS: ssm-user
+      # 全ホスト共通の置き場
+      REPO_DIR: /app/edge
+
+    steps:
+      - name: AWS OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: gha-ssm-deploy
+          aws-region: ${{ env.AWS_REGION }}
+          # 信頼ポリシー不備は何度やっても通らない。既定の 12 回バックオフ（約 3 分）で GA を溶かさない
+          retry-max-attempts: 1
+
+      - name: Deploy via SSM
+        uses: tn-org/tn-standards/.github/actions/ssm-run@v1.0.0
+        with:
+          instance-id: ${{ matrix.instance }}
+          comment: deploy ${{ github.sha }} (${{ github.ref_name }})
+          timeout-seconds: "600"
+          poll-interval: "5"
+          # SSM 側の timeout（600 秒）を待ち切れる回数にする。これより短いと、
+          # まだ走っているコマンドを置き去りにしたまま run だけが終わる
+          max-polls: "120"
+          # git 更新だけ直書きし、残りは repo 内の scripts/deploy-host.sh に任せる。
+          # pull 前のサーバーには新しいスクリプトが無いので、git 更新自体は一行側に置く
+          # 注意: コマンドは必ず一行で書く。sudo -i は引数の改行をエスケープするため、
+          # 複数行スクリプトは先頭の 1 コマンドに潰れて「何もせず Success」になる
+          # （2026-07-07〜21 の間、この形で全デプロイが偽 success だった実害）
+          command: |
+            sudo -iu ${{ env.RUN_AS }} bash -lc 'set -euo pipefail && cd "${{ env.REPO_DIR }}" && git fetch --all --prune && git reset --hard origin/main && ./scripts/deploy-host.sh'

@@ -1,0 +1,25 @@
+# TLS の既定オプション（ホスト共通）。file provider が読む動的設定。
+#
+# イメージのコンパイル時既定に任せず明示する。タグ固定でも既定が変われば実効値が変わり、
+# その変化は差分に現れないので review では気付けない（旧 nginx の 00-global.conf から継承）。
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      # SNI が無い / 登録の無いドメインへの HTTPS は証明書を出さず handshake ごと拒否する。
+      # 旧 nginx の 443 default_server + ssl_reject_handshake on と同じ狙い。
+      # これが無いと IP 直打ちや無関係な SNI が最初のルーターの証明書で handshake される
+      sniStrict: true
+      curvePreferences:
+        - X25519
+        - CurveP256
+      # TLS 1.3 の暗号スイートは Go 側で固定なのでここには書けない（書いても無視される）。
+      # 並べているのは TLS 1.2 用。AEAD（GCM / ChaCha20）と前方秘匿性のあるものだけ残す
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305

@@ -1,0 +1,16 @@
+# kernel 更新後の再起動待ち検知 タイマー
+# 配置先: /etc/systemd/system/report-reboot-check.timer
+# 毎日 08:20 JST（日報の集約 08:50 より前に warning を積んでおく）。
+# Persistent で停止中に飛んだ回を回収する。
+
+[Unit]
+Description=再起動待ちの検知
+
+[Timer]
+OnCalendar=*-*-* 08:20:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=300
+Unit=report-reboot-check.service
+
+[Install]
+WantedBy=timers.target

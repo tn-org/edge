@@ -1,0 +1,20 @@
+# ホスト状態の同期 サービス
+# 配置先: /etc/systemd/system/host-sync.service
+# setup-host-sync.sh が /path/to/edge を実パスに置換する。
+#
+# console コンテナから触れないもの（CrowdSec の遮断・systemd・再起動）の状態を
+# 管理コンソールへ送り、画面から積まれた操作を受け取って実行する。
+# f2b-sync を一般化して改称したもの。
+
+[Unit]
+Description=ホスト側の状態取得と操作実行
+# CrowdSec は docker コンテナなので、docker が上がってから走らせる
+After=docker.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/edge
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/report.sh host-sync
+TimeoutStartSec=180

@@ -1,0 +1,20 @@
+# 未使用 docker イメージの週次掃除サービス
+# 配置先: /etc/systemd/system/docker-prune.service
+#
+# setup-docker-prune.sh が /path/to/edge を実パスに置換する。
+# docker-prune.timer から起動される。失敗時は notify-failure@ で通知。
+
+[Unit]
+Description=未使用 docker イメージの削除
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/edge
+# .env は任意（未配置でもスクリプト側の既定値で動く）
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/docker-prune.sh
+TimeoutStartSec=600

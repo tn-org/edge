@@ -1,0 +1,16 @@
+# ディレクトリ別ディスク使用量の日次記録 タイマー
+# 配置先: /etc/systemd/system/report-disk-usage.timer
+# 毎日 08:30 JST（console の capacity:snapshot 09:10 より前に内訳を揃える）。
+# Persistent で停止中に飛んだ回を回収する。
+
+[Unit]
+Description=ディレクトリ別ディスク使用量の記録
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=300
+Unit=report-disk-usage.service
+
+[Install]
+WantedBy=timers.target

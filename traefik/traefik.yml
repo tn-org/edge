@@ -1,0 +1,98 @@
+# Traefik v3 静的設定（テンプレート）
+#
+# 実際に読ませるのは scripts/render-config.sh が .env の値を埋めて書き出す
+# traefik/generated/traefik.yml。Traefik の静的設定は「ファイル・環境変数・引数」の
+# いずれか 1 つしか使えず、ファイルの中で環境変数は展開されない。ホストごとに違う値
+# （ACME_EMAIL・EDGE_NETWORK）はここに置けないので、埋め込み用のプレースホルダにしてある。
+#
+# 動的設定（ルーター・ミドルウェア）は 2 か所から入る:
+#   - docker provider … 各プロジェクトの compose のラベル。edge はここに何も持たない
+#   - file provider   … traefik/dynamic/*.yml。ホスト共通のミドルウェアと TLS 設定
+
+global:
+  # 起動のたびに Traefik の新版を問い合わせに行く。運用に要らないので止める
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  # Traefik 自身のログは stdout（docker の json-file。上限は compose 側で 10m×3）
+  level: INFO
+
+# CrowdSec が読む唯一の入力。JSON 形式でないと crowdsecurity/traefik パーサが解釈できない。
+#
+# 注意: RequestPath にはクエリ文字列が入る。管理画面は検索語（顧客のメールアドレス）を
+# GET に載せるため、logrotate/traefik の postrotate で圧縮前にクエリを落としている。
+accessLog:
+  filePath: /var/log/traefik/access.log
+  format: json
+  # 遮断は即応させたいのでバッファしない（1 行ずつ書き出す）
+  bufferingSize: 0
+  fields:
+    defaultMode: keep
+    headers:
+      # ヘッダは既定で落とす。User-Agent だけはシナリオ（bad-user-agent 等）が使う
+      defaultMode: drop
+      names:
+        User-Agent: keep
+
+api:
+  dashboard: true
+  # 公開ルーターは作らない。見るときだけ compose の 127.0.0.1:8080 と
+  # 下の traefik entryPoint を有効にして SSH ポートフォワードで覗く
+  insecure: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      # ACME の http-01 チャレンジは Traefik が内部で先に処理するのでリダイレクトされない
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    http:
+      # 全ルーターに既定で効かせる。プロジェクトがラベルで足すミドルウェアはこの後ろに付く。
+      # 順序: 遮断 → ヘッダ → レート制限 → 同時接続数
+      middlewares:
+        - crowdsec-bouncer@file
+        - security-headers@file
+        - ratelimit-default@file
+        - inflight-default@file
+      tls:
+        # プロジェクトがラベルで certresolver を指定しなくても証明書が出る既定
+        certResolver: letsencrypt
+  # ダッシュボード用（既定では無効。api.insecure と compose のポートも併せて有効にする）
+  # traefik:
+  #   address: ":8080"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    # ラベルで明示したコンテナだけ公開する。付け忘れで意図せず外へ出ない
+    exposedByDefault: false
+    # 複数ネットワークに属するコンテナでも、必ずこのネットワーク側の IP へ繋ぐ。
+    # 実名は .env の EDGE_NETWORK（render-config.sh が埋める）
+    network: __EDGE_NETWORK__
+    watch: true
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: __ACME_EMAIL__
+      storage: /acme/acme.json
+      httpChallenge:
+        entryPoint: web
+
+experimental:
+  plugins:
+    # CrowdSec の decision を Traefik のミドルウェアとして適用する。
+    # 実体の設定は traefik/dynamic/middlewares.yml
+    crowdsec-bouncer:
+      moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+      version: v1.4.5

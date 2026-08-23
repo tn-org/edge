@@ -1,0 +1,15 @@
+# 不正アクセス遮断の日次レポート タイマー
+# 配置先: /etc/systemd/system/report-bans.timer
+# 毎日 08:00 JST に直近 24 時間の遮断状況を出す。Persistent で取りこぼし回収。
+
+[Unit]
+Description=不正アクセス遮断の記録
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=300
+Unit=report-bans.service
+
+[Install]
+WantedBy=timers.target

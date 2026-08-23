@@ -1,0 +1,16 @@
+# ホスト状態の同期 タイマー
+# 配置先: /etc/systemd/system/host-sync.timer
+# 5 分ごと。管理画面からの遮断解除・定期実行の操作はここで拾われるため、
+# 間隔がそのまま「押してから効くまで」の待ち時間になる。
+
+[Unit]
+Description=ホスト側の状態取得と操作実行
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=host-sync.service
+
+[Install]
+WantedBy=timers.target

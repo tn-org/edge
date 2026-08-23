@@ -1,0 +1,13 @@
+# CrowdSec の入力（acquisition）。配置先: コンテナ内 /etc/crowdsec/acquis.yaml
+#
+# 読むのは Traefik の JSON アクセスログ 1 本だけ。ドメインごとの区別はログの
+# RequestHost フィールドに入っているので、vhost ごとにファイルを分ける必要は無い。
+#
+# type: traefik は crowdsecurity/traefik collection が持つパーサの名前。
+# ここが合っていないとパースが全滅し、遮断が 1 件も作られないまま静かに動き続ける。
+# 導入時に必ず `cscli metrics` の acquisition 行で読み取り件数を確認すること。
+
+filenames:
+  - /var/log/traefik/access.log
+labels:
+  type: traefik

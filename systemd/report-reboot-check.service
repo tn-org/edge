@@ -1,0 +1,14 @@
+# kernel 更新後の再起動待ち検知 サービス
+# 配置先: /etc/systemd/system/report-reboot-check.service
+# setup-reboot-check.sh が /path/to/edge を実パスに置換する。
+
+[Unit]
+Description=再起動待ちの検知
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/edge
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/report.sh reboot-check
+TimeoutStartSec=120

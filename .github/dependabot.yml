@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # GitHub Actions（reusable workflow / composite の参照）を週次で更新 PR に。
+  # この repo は main 一本なので宛先は既定（main）。tn-standards 由来は 1 PR にまとめる。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      tn-standards:
+        patterns:
+          - "tn-org/tn-standards*"

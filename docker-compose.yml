@@ -1,0 +1,87 @@
+# compose の project 名を固定する。dir 名由来だと置き場（/app/edge）を移した時点で変わり、
+# 旧 project に居た同名コンテナと見た目が混ざるため明示する（console 側と同じ理由）
+name: edge
+
+networks:
+  # ホストに 1 本だけ置く共有ネットワーク。各プロジェクトの compose も同じものへ external で
+  # 参加する。実名は .env の EDGE_NETWORK（既定 edge）。compose 内部の別名は edge で固定し、
+  # 実名だけを可変にする（ネットワークのキー名では変数展開が効かないため name: で渡す）。
+  # 初回作成は scripts/init.sh が同じ値で行う
+  edge:
+    external: true
+    name: ${EDGE_NETWORK:-edge}
+
+# json-file ログの上限。daemon.json を配る仕組みが無いので compose 側で持つ。
+# Traefik のアクセスログは bind mount 側（./logs/traefik）に出るのでここに溜まるのは
+# 起動ログと警告程度だが、上限が無いと歯止めが一切ない
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---------------------------------------------------------------------------
+  # リバースプロキシ。ルーティングは各プロジェクトの compose のラベルで宣言される
+  # （docker provider・exposedByDefault: false）。edge はプロジェクト固有の設定を持たない。
+  #
+  # 静的設定（traefik/generated/traefik.yml）は scripts/render-config.sh が
+  # traefik/traefik.yml に .env の値を埋めて作る。Traefik の静的設定はファイル・環境変数・
+  # 引数のいずれか 1 つしか使えず、ファイルの中では環境変数が展開されないため。
+  # ---------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3
+    container_name: edge-traefik
+    ports:
+      - "80:80"
+      - "443:443"
+      # ダッシュボードを見るときだけ開ける（loopback 限定）。
+      # 併せて traefik/traefik.yml の api.insecure と traefik entryPoint を有効にする
+      # - "127.0.0.1:8080:8080"
+    volumes:
+      # ルーティングの自動検出用。read-only（Traefik は読むだけ）
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/generated/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/generated/lapi-key:/run/secrets/crowdsec-lapi-key:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      # ACME の証明書ストア。acme.json は Traefik が 600 で作る
+      - ./traefik/acme:/acme
+      - ./logs/traefik:/var/log/traefik
+    networks: [edge]
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - crowdsec
+
+  # ---------------------------------------------------------------------------
+  # 不正アクセスの検知。Traefik の JSON アクセスログを読んで decision（遮断の判断）を作り、
+  # Traefik 側の bouncer プラグインが LAPI に問い合わせて実際に弾く。
+  # LAPI はポートを publish しない（共有ネットワーク内の Traefik からのみ届く）。
+  # ---------------------------------------------------------------------------
+  crowdsec:
+    image: crowdsecurity/crowdsec:latest
+    container_name: edge-crowdsec
+    environment:
+      # 有効化する collection（パーサ + シナリオのまとまり）
+      COLLECTIONS: "crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/base-http-scenarios"
+      # bouncer を起動時に登録する。cscli bouncers add を手で叩かなくてよい
+      BOUNCER_KEY_traefik: ${CROWDSEC_BOUNCER_KEY:?CROWDSEC_BOUNCER_KEY が未設定（.env を確認）}
+      TZ: Asia/Tokyo
+    volumes:
+      - ./crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+      # 公式イメージの config.yaml を丸ごと置き換えず、差分だけ上書きする（CrowdSec の .local 方式）
+      - ./crowdsec/config.yaml.local:/etc/crowdsec/config.yaml.local:ro
+      # 除外 IP（scripts/ban.sh allow が生成）。パーサ段で落とすので decision 自体が作られない
+      - ./crowdsec/generated/whitelist.yaml:/etc/crowdsec/parsers/s02-enrich/edge-allowlist.yaml:ro
+      # decision の実体（SQLite）と、登録済み machine / bouncer の認証情報。
+      # 消えると遮断が全部消え、bouncer の登録もやり直しになるので名前付き volume で持つ
+      - crowdsec-data:/var/lib/crowdsec/data
+      - crowdsec-config:/etc/crowdsec
+      - ./logs/traefik:/var/log/traefik:ro
+    networks: [edge]
+    restart: unless-stopped
+    logging: *default-logging
+
+volumes:
+  crowdsec-data:
+  crowdsec-config:

@@ -1,0 +1,17 @@
+# ディレクトリ別ディスク使用量の日次記録 サービス
+# 配置先: /etc/systemd/system/report-disk-usage.service
+# setup-disk-usage.sh が /path/to/edge を実パスに置換する。
+
+[Unit]
+Description=ディレクトリ別ディスク使用量の記録
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/edge
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/report.sh disk-usage
+# ディスク全域を walk するため他の処理を邪魔しないよう優先度を下げる
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=600

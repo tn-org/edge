@@ -1,0 +1,17 @@
+# 不正アクセス遮断の日次レポート サービス
+# 配置先: /etc/systemd/system/report-bans.service
+# setup-bans.sh が /path/to/edge を実パスに置換する。
+#
+# 旧名 report-fail2ban。遮断の実体が fail2ban から CrowdSec に変わったため改称した。
+
+[Unit]
+Description=不正アクセス遮断の記録
+# CrowdSec は docker コンテナなので、docker が上がってから走らせる
+After=docker.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/edge
+EnvironmentFile=-/path/to/edge/.env
+ExecStart=/path/to/edge/scripts/report.sh bans

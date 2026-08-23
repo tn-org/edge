@@ -1,0 +1,23 @@
+# 環境変数
+.env
+
+# .env の値を埋め込んで作る設定の実体（Traefik 静的設定・CrowdSec LAPI キー）
+traefik/generated/
+
+# ACME の証明書ストア（機密情報。acme.json は Traefik が 600 で作る）
+traefik/acme/
+
+# 除外 IP の一覧と、そこから作る CrowdSec の whitelist（運用で変わる状態）
+crowdsec/generated/
+
+# deploy-host.sh の入れ替え判定用ハッシュ・再起動待ちの検知時刻
+.state/
+
+# ログ
+logs/
+
+# OS
+.DS_Store
+
+# Claude Code の作業ディレクトリ（エージェント worktree 等）
+.claude/

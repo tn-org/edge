@@ -1,0 +1,21 @@
+# CrowdSec 本体設定の差分上書き。配置先: コンテナ内 /etc/crowdsec/config.yaml.local
+#
+# CrowdSec は config.yaml を読んだあと、同名 + .local のファイルがあればその内容を
+# 上書きマージする。イメージが持つ config.yaml を丸ごと差し替えると、パスや DB の
+# 既定値まで抱え込むことになり、イメージの更新に追従できなくなるのでこちらを使う。
+#
+# ここに書くのは「イメージの既定と変えたいものだけ」。
+
+common:
+  log_media: stdout
+  log_level: info
+
+prometheus:
+  # メトリクスは cscli metrics で見る。外へ scrape させないので listen しない
+  enabled: false
+
+db_config:
+  flush:
+    # 解決済み alert の保持。日報と管理画面の記録は console 側に永続するので、
+    # CrowdSec 側は短くてよい（decision が消えれば遮断も解ける）
+    max_age: 30d

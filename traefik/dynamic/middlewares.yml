@@ -1,0 +1,58 @@
+# ホスト共通のミドルウェア（file provider）。
+#
+# entryPoints.websecure.http.middlewares で全ルーターに既定で効かせている
+# （traefik/traefik.yml）。プロジェクト側がラベルで足すぶんはこの後ろに付く。
+# 別の値にしたいプロジェクトは、自分のラベルで別名のミドルウェアを定義して参照する。
+
+http:
+  middlewares:
+    # -------------------------------------------------------------------------
+    # CrowdSec の decision を適用する。LAPI に問い合わせて遮断中の IP を 403 で返す。
+    #
+    # LAPI のキーは .env の CROWDSEC_BOUNCER_KEY が正。動的設定ファイルの中では
+    # 環境変数が展開されないため、scripts/render-config.sh がキーだけをファイルへ書き出し、
+    # ここではそのパスを渡す（プラグインが用意している crowdsecLapiKeyFile）。
+    #
+    # forwardedHeadersTrustedIPs は設定しない。edge は外から直接叩かれるので、
+    # クライアントが付けてきた X-Forwarded-For を信じると遮断を素通りできてしまう。
+    # -------------------------------------------------------------------------
+    crowdsec-bouncer:
+      plugin:
+        crowdsec-bouncer:
+          enabled: "true"
+          logLevel: INFO
+          # live = リクエストのたびに LAPI へ問い合わせる（同一 EC2 内なので往復は数百 µs）
+          crowdsecMode: live
+          crowdsecLapiScheme: http
+          crowdsecLapiHost: crowdsec:8080
+          crowdsecLapiKeyFile: /run/secrets/crowdsec-lapi-key
+
+    # -------------------------------------------------------------------------
+    # レート制限。旧 nginx の limit_req zone=edge_req rate=30r/s burst=100 nodelay と同値。
+    # 上限に当てた分は 429 で返る。閾値は正規利用の実測より十分上に置き、バーストは
+    # 素通しして通常の画面遷移や並列アセット取得は落とさない。
+    # -------------------------------------------------------------------------
+    ratelimit-default:
+      rateLimit:
+        average: 30
+        period: 1s
+        burst: 100
+
+    # 同時に処理中のリクエスト数の上限。旧 nginx の limit_conn edge_conn 100 に相当。
+    # 超過は 429（Traefik の既定）
+    inflight-default:
+      inFlightReq:
+        amount: 100
+
+    # -------------------------------------------------------------------------
+    # セキュリティヘッダ。HSTS は旧 vhost の add_header と同値（max-age=31536000・
+    # includeSubDomains なし）。nosniff と Referrer-Policy は Traefik 化に合わせて追加した。
+    #
+    # frameDeny は入れていない。管理画面や将来の埋め込みを壊す可能性があり、
+    # 旧 nginx でも送っていなかったため、移行と同時に挙動を変えない。
+    # -------------------------------------------------------------------------
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        referrerPolicy: strict-origin-when-cross-origin

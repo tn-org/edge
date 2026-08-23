@@ -1,0 +1,19 @@
+# 未使用 docker イメージの週次掃除タイマー
+# 配置先: /etc/systemd/system/docker-prune.timer
+#
+# 毎週日曜 06:00 JST に起動。Persistent=true で、停止中に窓を逃しても次回起動時に回収する。
+# GitHub Actions の週次イメージ更新（05:00 JST）が終わったあとに回して、
+# 入れ替えで使われなくなった前の版をその場で片付ける。
+
+[Unit]
+Description=未使用 docker イメージの削除
+
+[Timer]
+OnCalendar=Sun *-*-* 06:00:00 Asia/Tokyo
+Persistent=true
+# 起動時刻を分散（瞬間負荷の回避）
+RandomizedDelaySec=600
+Unit=docker-prune.service
+
+[Install]
+WantedBy=timers.target
