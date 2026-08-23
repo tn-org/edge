@@ -12,8 +12,12 @@ common:
   log_level: info
 
 prometheus:
-  # Metrics are read with cscli metrics; nothing scrapes from outside, so do not listen.
-  enabled: false
+  # cscli metrics reads from this endpoint, so it has to be on. Nothing scrapes it from
+  # outside: it listens inside the container only and the port is not published.
+  enabled: true
+  level: full
+  listen_addr: 127.0.0.1
+  listen_port: 6060
 
 db_config:
   flush:
