@@ -28,6 +28,15 @@ cd "$ROOT_DIR"
 ALLOW_TSV="crowdsec/generated/allowlist.tsv"
 ALLOW_YAML="crowdsec/generated/whitelist.yaml"
 
+# This script runs both as the deploy user (make update) and as root (the systemd
+# timers via ban.sh). Root runs must not leave root-owned files behind, or the next
+# make update fails with Permission denied. Called at the end of every entry point.
+fix_ownership() {
+  if [ "$(id -u)" = 0 ]; then
+    chown -R --reference="$ROOT_DIR" crowdsec/generated traefik/generated 2>/dev/null || true
+  fi
+}
+
 # Convert the allowlist (allowlist.tsv) into a CrowdSec parser whitelist.
 # It is dropped at the parser stage, so an allowlisted IP never produces a decision.
 render_allowlist() {
@@ -73,6 +82,7 @@ render_allowlist() {
 
 if [ "${1:-all}" = "allowlist" ]; then
   render_allowlist
+  fix_ownership
   echo "Allowlist applied: $ALLOW_YAML"
   exit 0
 fi
@@ -166,5 +176,6 @@ else
 fi
 
 render_allowlist
+fix_ownership
 
 echo "Config generated (traefik/generated, crowdsec/generated)"
