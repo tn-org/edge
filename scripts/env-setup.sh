@@ -71,7 +71,17 @@ lookup() {
 # through the environment.
 setval() {
   local k="$1" v="$2"
-  case "$v" in *" "*) case "$v" in \"*\") ;; *) v="\"$v\"" ;; esac ;; esac
+  # .env is sourced by bash (set -a; . .env) across the repo, so characters bash
+  # would expand or split on ($ ` " ' \ space #) must be neutralised. Single-quote
+  # such values, escaping embedded single quotes as '\''. Without this, an htpasswd
+  # hash (DASHBOARD_AUTH contains $apr1$) breaks every script that reads .env.
+  case "$v" in
+    \'*\') ;; # already single-quoted by the caller: leave as-is
+    *[\$\`\"\'\\\ \#]*)
+      v="${v//\'/\'\\\'\'}"
+      v="'$v'"
+      ;;
+  esac
   if grep -qE "^$k=" "$ENV"; then
     K="$k" V="$v" awk '
       BEGIN{k=ENVIRON["K"]; v=ENVIRON["V"]; done=0}
