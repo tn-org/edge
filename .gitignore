@@ -16,5 +16,8 @@ crowdsec/generated/
 # Logs
 logs/
 
+# Python bytecode (report.sh imports scripts/crowdsec_json.py)
+__pycache__/
+
 # OS
 .DS_Store
