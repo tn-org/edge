@@ -47,8 +47,8 @@ The host layer does not depend on the ops console, but two touch points are fixe
 - `scripts/notify.sh` and `scripts/report.sh` post to the notification hub (the console's
   `/internal/notify` and friends) at `OPS_NOTIFY_URL` from `.env`, default
   `http://127.0.0.1:9090`, authenticated with `INTERNAL_TOKEN` from `.env`. The blocking
-  sync endpoint stays `/internal/fail2ban`: the implementation behind it is CrowdSec now,
-  but the JSON shape did not change, and what used to be a fail2ban "jail" is a CrowdSec
+  sync endpoint is `/internal/abuse-blocking`. The JSON shape dates from a fail2ban-era
+  implementation and did not change: what used to be a fail2ban "jail" is a CrowdSec
   scenario name.
 - The console publishes itself through the Traefik labels in its own compose file. Both
   sides meet on the shared external docker network named by `EDGE_NETWORK` in `.env`

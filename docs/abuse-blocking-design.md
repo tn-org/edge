@@ -44,12 +44,12 @@ within a day.
 
 ## 2. Recording blocks
 
-The host syncs blocking state to the ops console over `POST /internal/fail2ban`. The
+The host syncs blocking state to the ops console over `POST /internal/abuse-blocking`. The
 console appends to its `ban_records` table and never deletes: the unique key is
 `(jail, ip, banned_at)`, and "currently blocked" means `released_at is null` and
 `expires_at` in the future.
 
-The endpoint path and the field names date from a fail2ban implementation and are kept as
+The field names date from a fail2ban implementation and are kept as
 a stable contract. What used to be a jail name is now a CrowdSec scenario name such as
 `crowdsecurity/http-probing`, and the operation names (`list`, `ban`, `unban`, `allow`,
 `disallow`, `allowed`) are unchanged for the same reason.

@@ -227,8 +227,9 @@ PY
     # queued operation requests and run them. One invocation covers send, execute and
     # report back.
     #
-    # The console endpoint (POST /internal/fail2ban) and its JSON shape are a stable
-    # contract from the fail2ban era. What used to be a "jail" is a CrowdSec scenario name
+    # The console endpoint (POST /internal/abuse-blocking) and its JSON shape are a stable
+    # contract. The shape dates from a fail2ban-era implementation: what used to be a
+    # "jail" is a CrowdSec scenario name
     # such as crowdsecurity/http-probing.
     DEC_FILE="$(mktemp)"; REQ_FILE="$(mktemp)"; RES_FILE="$(mktemp)"; ALLOW_FILE="$(mktemp)"
     trap 'rm -f "$DEC_FILE" "$REQ_FILE" "$RES_FILE" "$ALLOW_FILE"' EXIT
@@ -317,8 +318,7 @@ headers = {"Content-Type": "application/json", "Accept": "application/json"}
 token = os.environ.get("INTERNAL_TOKEN")
 if token:
     headers["X-Internal-Token"] = token
-# The endpoint path is unchanged from the fail2ban era (the console contract is stable)
-req = urllib.request.Request(url.rstrip("/") + "/internal/fail2ban", data=data, headers=headers)
+req = urllib.request.Request(url.rstrip("/") + "/internal/abuse-blocking", data=data, headers=headers)
 try:
     with urllib.request.urlopen(req, timeout=30) as res:
         raw = res.read().decode(errors="replace")
