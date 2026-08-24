@@ -152,6 +152,20 @@ Generate `INTERNAL_TOKEN` and `CROWDSEC_BOUNCER_KEY` with `openssl rand -hex 32`
 is not tracked by git and exists only on the server. Compare it against the example with
 `make env CMD=check`.
 
+## Traefik dashboard (optional)
+
+Set both keys in `.env` and run `make render` (or `make update`):
+
+```
+DASHBOARD_HOST=traefik.example.com
+DASHBOARD_AUTH=admin:$apr1$...      # openssl passwd -apr1 'your-password'
+```
+
+Point a DNS record for that FQDN at this host. The dashboard is then served over HTTPS
+(certificate via ACME like any other route) behind basic auth. With the keys empty
+(the default) no route exists and the dashboard is unreachable. It is read-only: it
+shows routers, services and middlewares, and cannot change anything.
+
 ## Further reading
 
 - Command list and where each one runs: `docs/commands.md`

@@ -4,6 +4,7 @@
 # Multi-line bodies are JSON-encoded with python3 so newlines and special characters
 # cannot break the payload.
 # Usage:
+#   report.sh certs       # days left per certificate; warn when any is under 14 days
 #   report.sh os          # read the dnf-automatic body on stdin, notify if anything was applied
 #   report.sh bans        # notify a summary of blocking status
 #   report.sh disk-usage  # record usage per directory in the console (no notification)
@@ -90,6 +91,64 @@ PY
 }
 
 case "${1:-}" in
+  certs)
+    # Daily certificate expiry report. Traefik renews automatically about 30 days
+    # before expiry and nothing else watches the outcome, so a renewal that keeps
+    # failing would only surface as an expired site. Read the ACME store, print the
+    # days left per domain (visible as the timer's last output in the console), and
+    # send a warning when any certificate has under 14 days left — by then the
+    # automatic renewal has been failing for over two weeks.
+    ACME_FILE="$ROOT_DIR/traefik/acme/acme.json"
+    if ! sudo test -s "$ACME_FILE"; then
+      echo "No ACME store yet ($ACME_FILE); nothing to report"
+      exit 0
+    fi
+    # Pass the store through a temporary file: the python program itself arrives on
+    # stdin as a heredoc, so piping the JSON into the same stdin cannot work.
+    BODY_FILE="$(mktemp)"; STORE_FILE="$(mktemp)"
+    trap 'rm -f "$BODY_FILE" "$STORE_FILE"' EXIT
+    sudo cat "$ACME_FILE" > "$STORE_FILE"
+    python3 - "$STORE_FILE" > "$BODY_FILE" <<'PY'
+import base64, datetime, json, subprocess, sys
+
+WARN_DAYS = 14
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+now = datetime.datetime.now(datetime.timezone.utc)
+rows, warn = [], False
+for resolver in (data or {}).values():
+    for cert in (resolver or {}).get("Certificates") or []:
+        domain = (cert.get("domain") or {}).get("main") or "?"
+        pem = base64.b64decode(cert.get("certificate") or "")
+        # The blob is the full chain; openssl reads the first block, which is the leaf
+        out = subprocess.run(["openssl", "x509", "-noout", "-enddate"],
+                             input=pem, capture_output=True)
+        text = out.stdout.decode().strip()  # notAfter=Aug 24 12:00:00 2026 GMT
+        try:
+            end = datetime.datetime.strptime(text.split("=", 1)[1], "%b %d %H:%M:%S %Y %Z")
+            end = end.replace(tzinfo=datetime.timezone.utc)
+        except (IndexError, ValueError):
+            rows.append(f"{domain}: unreadable certificate")
+            warn = True
+            continue
+        days = (end - now).days
+        rows.append(f"{domain}: {days} days left (expires {end.date()})")
+        if days < WARN_DAYS:
+            warn = True
+if not rows:
+    rows.append("No certificates in the store")
+print("\n".join(rows))
+sys.exit(2 if warn else 0)
+PY
+    status=$?
+    cat "$BODY_FILE"
+    if [ "$status" -eq 2 ]; then
+      "$SCRIPT_DIR/notify.sh" --warn "Certificate renewal overdue" < "$BODY_FILE"
+    elif [ "$status" -ne 0 ]; then
+      echo "Could not read the ACME store" >&2
+      exit 1
+    fi
+    ;;
   os)
     # The body arrives on stdin from the dnf-automatic command emitter.
     body="$(cat)"

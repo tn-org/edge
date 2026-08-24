@@ -41,8 +41,9 @@ accessLog:
 
 api:
   dashboard: true
-  # No public router. To look at it, enable 127.0.0.1:8080 in compose and the traefik
-  # entryPoint below, then reach it through an SSH port forward.
+  # Never expose the API entrypoint directly. The dashboard is published as a normal
+  # HTTPS route with basic auth when DASHBOARD_HOST / DASHBOARD_AUTH are set in .env
+  # (scripts/render-config.sh renders traefik/dynamic/generated-dashboard.yml).
   insecure: false
 
 entryPoints:

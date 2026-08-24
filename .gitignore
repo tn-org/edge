@@ -4,6 +4,9 @@
 # Config rendered from .env (Traefik static config, CrowdSec LAPI key)
 traefik/generated/
 
+# Dashboard route rendered from .env (DASHBOARD_HOST / DASHBOARD_AUTH)
+traefik/dynamic/generated-dashboard.yml
+
 # ACME certificate store (secret; Traefik creates acme.json with mode 600)
 traefik/acme/
 

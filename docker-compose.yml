@@ -39,9 +39,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      # Open only when looking at the dashboard (loopback only). Also enable api.insecure
-      # and the traefik entryPoint in traefik/traefik.yml.
-      # - "127.0.0.1:8080:8080"
+      # The dashboard is published over HTTPS with basic auth when DASHBOARD_HOST /
+      # DASHBOARD_AUTH are set in .env (see .env.example); no extra port is needed.
     volumes:
       # For routing discovery. Read-only, since Traefik only reads it.
       - /var/run/docker.sock:/var/run/docker.sock:ro

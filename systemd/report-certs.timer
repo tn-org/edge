@@ -1,0 +1,16 @@
+# Daily certificate expiry report
+# Installed to: /etc/systemd/system/report-certs.timer
+# 08:15 Asia/Tokyo, before the ops console's daily report. Persistent catches up runs
+# missed while the machine was off.
+
+[Unit]
+Description=Certificate expiry report
+
+[Timer]
+OnCalendar=*-*-* 08:15:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=300
+Unit=report-certs.service
+
+[Install]
+WantedBy=timers.target

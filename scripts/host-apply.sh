@@ -20,6 +20,7 @@ for step in \
   setup-bans \
   setup-docker-prune \
   setup-disk-usage \
+  setup-certs \
   setup-host-sync \
   setup-update
 do

@@ -100,6 +100,7 @@ since the interval column already says so.
 | Daily 04:00  | OS security auto-update                                      | systemd | dnf-automatic.timer (setup-auto-patch.sh)         | Mail on failure            |
 | Daily 05:00  | edge update (git follow, compose apply; disabled by default) | systemd | edge-update.timer (setup-update.sh)               | Mail on failure            |
 | Daily 08:00  | Abuse blocking record                                        | systemd | report-bans.timer (setup-bans.sh)                 | Mail on failure            |
+| Daily 08:15  | Certificate expiry report (warns under 14 days left)         | systemd | report-certs.timer (setup-certs.sh)               | Mail on failure / warning  |
 | Daily 08:20  | Pending reboot check (repeats daily while a reboot is due)   | systemd | report-reboot-check.timer (setup-reboot-check.sh) | Mail on the days it is due |
 | Daily 08:30  | Disk usage per directory                                     | systemd | report-disk-usage.timer (setup-disk-usage.sh)     | Mail on failure            |
 | Every 5 min  | Host state sync and operation execution                      | systemd | host-sync.timer (setup-host-sync.sh)              | Mail on failure            |
@@ -111,7 +112,10 @@ this host from the outside, and this repo contains no CI workflows.
 
 Certificate renewal and persisting the block list are not on the list because they no
 longer need a timer: Traefik's ACME resolver renews certificates before they expire, and
-blocks live in the CrowdSec database on a named volume.
+blocks live in the CrowdSec database on a named volume. The renewal itself is silent,
+which is why `report-certs.timer` watches the outcome: it reads the ACME store daily and
+warns when any certificate has under 14 days left (renewal starts at 30 days, so under 14
+means it has been failing for over two weeks).
 
 Three ways a result reaches you:
 
