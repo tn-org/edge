@@ -20,7 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 [ -f "$ROOT_DIR/.env" ] && { set -a; . "$ROOT_DIR/.env"; set +a; }
 
-# The host name is not added; the "host" source field is enough
+# The host name is not added; the "host" source field is enough.
+# Empty OPS_NOTIFY_URL means the host has no ops console: keep the message in journald
+# (echoed below) and skip the POST.
 HUB_URL="${OPS_NOTIFY_URL:-http://127.0.0.1:9090}"
 
 if [ "${1:-}" = "--failed" ]; then
@@ -50,6 +52,11 @@ fi
 echo "$TITLE"
 if [ -n "$BODY" ] && [ "$BODY" != "$TITLE" ]; then
   echo "$BODY"
+fi
+
+if [ -z "$HUB_URL" ]; then
+  echo "No ops console configured (OPS_NOTIFY_URL is empty); journald only"
+  exit 0
 fi
 
 python3 - "$HUB_URL" "$LEVEL" "$TITLE" "$BODY" <<'PY'

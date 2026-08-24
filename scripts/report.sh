@@ -19,6 +19,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 [ -f "$ROOT_DIR/.env" ] && { set -a; . "$ROOT_DIR/.env"; set +a; }
 
+# A host without an ops console sets OPS_NOTIFY_URL to empty in .env. Every report and
+# sync here targets the console, so exit quietly instead of failing the timers daily.
+# Unset still means the default URL (a console on the same host).
+if [ -n "${OPS_NOTIFY_URL+x}" ] && [ -z "$OPS_NOTIFY_URL" ]; then
+  echo "No ops console configured (OPS_NOTIFY_URL is empty); nothing to report"
+  exit 0
+fi
+
 # The CrowdSec CLI only exists inside the container, so go through compose.
 # Empty or non-JSON output must not crash the caller; callers check the result themselves.
 cscli() {
