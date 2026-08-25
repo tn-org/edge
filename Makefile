@@ -29,7 +29,8 @@ GUARD_SERVER = @if [ "$(APP_ENV)" = "local" ]; then echo "make $@ is server-only
 .DEFAULT_GOAL := help
 
 .PHONY: help up down restart ps logs render \
-	update bans host-apply ban docker-prune env setup
+	update bans host-apply ban docker-prune env setup \
+	db-up db-down db-create
 
 help: # (prints the command list; hidden from the list itself)
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -68,6 +69,25 @@ logs: ## View logs, TARGET=access|container (asks when omitted) [both]
 
 render: ## Apply .env values to the config files (Traefik static config, LAPI key, allowlist) [both]
 	$(SCRIPTS)/render-config.sh
+
+##@ Shared database (optional)
+
+# The db profile is opt-in: on a server it is enabled through COMPOSE_PROFILES in .env so
+# the normal up/update path carries it, while db-up starts the database alone (the local
+# case, where Traefik and CrowdSec never run). The network is created here too, because
+# on a workstation init.sh has usually never run.
+db-up: ## Start the shared PostgreSQL instance only (creates the network if needed) [both]
+	@password=$$(grep '^POSTGRES_PASSWORD=' .env 2>/dev/null | cut -d'=' -f2); \
+	[ -n "$$password" ] || { echo "POSTGRES_PASSWORD is not set (make env KEY=POSTGRES_PASSWORD VALUE=...)"; exit 1; }
+	@network=$$(grep '^EDGE_NETWORK=' .env 2>/dev/null | cut -d'=' -f2); \
+	$(SUDO)$(DOCKER) network create "$${network:-edge}" >/dev/null 2>&1 || true
+	$(COMPOSE) --profile db up -d postgres
+
+db-down: ## Stop the shared PostgreSQL instance (data stays in the volume) [both]
+	$(COMPOSE) --profile db stop postgres
+
+db-create: ## Create a database and its owner role, NAME= [ROLE= PASSWORD=] (idempotent) [both]
+	@$(SUDO)$(SCRIPTS)/db-create.sh '$(NAME)' '$(ROLE)' '$(PASSWORD)'
 
 ##@ Updates
 

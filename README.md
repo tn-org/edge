@@ -139,18 +139,45 @@ networks:
 
 ## `.env` keys
 
-| Key                    | Default                 | Description                                                                                          |
-| ---------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------- |
-| `APP_ENV`              | `local`                 | `local` = workstation, anything else = server. Controls sudo and the server-only guard               |
-| `EDGE_NETWORK`         | `edge`                  | Name of the one shared docker network; edge and every application join it as external                |
-| `ACME_EMAIL`           | —                       | Registration address for Let's Encrypt (where expiry notices go)                                     |
-| `INTERNAL_TOKEN`       | —                       | Shared secret for internal calls; one value across applications, ops console and host layer          |
-| `OPS_NOTIFY_URL`       | `http://127.0.0.1:9090` | Where the notification hub lives; change only if the ops console runs on another host                |
-| `CROWDSEC_BOUNCER_KEY` | —                       | Shared secret between the Traefik bouncer and the CrowdSec LAPI; compose refuses to start without it |
+| Key                    | Default                 | Description                                                                                           |
+| ---------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------- |
+| `APP_ENV`              | `local`                 | `local` = workstation, anything else = server. Controls sudo and the server-only guard                |
+| `EDGE_NETWORK`         | `edge`                  | Name of the one shared docker network; edge and every application join it as external                 |
+| `ACME_EMAIL`           | —                       | Registration address for Let's Encrypt (where expiry notices go)                                      |
+| `INTERNAL_TOKEN`       | —                       | Shared secret for internal calls; one value across applications, ops console and host layer           |
+| `OPS_NOTIFY_URL`       | `http://127.0.0.1:9090` | Where the notification hub lives; change only if the ops console runs on another host                 |
+| `CROWDSEC_BOUNCER_KEY` | —                       | Shared secret between the Traefik bouncer and the CrowdSec LAPI; compose refuses to start without it  |
+| `COMPOSE_PROFILES`     | —                       | Optional services to include in `up`/`update`; `db` adds the shared PostgreSQL instance               |
+| `POSTGRES_PASSWORD`    | —                       | Superuser password of the shared PostgreSQL instance; read only when the db service starts            |
+| `POSTGRES_PORT`        | `5432`                  | Host-side loopback port of the shared PostgreSQL instance; containers always use `edge-postgres:5432` |
 
 Generate `INTERNAL_TOKEN` and `CROWDSEC_BOUNCER_KEY` with `openssl rand -hex 32`. `.env`
 is not tracked by git and exists only on the server. Compare it against the example with
 `make env CMD=check`.
+
+## Shared database (optional)
+
+One PostgreSQL instance per host, shared by every application: each one gets its own
+database and owner role, nothing else differs. A host whose databases live in a managed
+service (RDS etc.) skips this entirely — the service sits behind the `db` compose
+profile and is off by default.
+
+- Server: set `COMPOSE_PROFILES=db` and `POSTGRES_PASSWORD` in `.env`; the regular
+  `make up` / `make update` path then carries the database.
+- Workstation: `make db-up` starts the database alone (Traefik and CrowdSec never run
+  locally) and creates the shared network if needed.
+
+Provision an application with:
+
+```
+make db-create NAME=myapp PASSWORD=...
+```
+
+This creates role `myapp` owning database `myapp` and is idempotent; the password is
+only needed while the role does not exist yet. The application connects with
+`DB_HOST=edge-postgres` on the shared network (or `127.0.0.1:$POSTGRES_PORT` from the
+host — the port is published on loopback only). Data lives in the `pgdata` named
+volume.
 
 ## Traefik dashboard (optional)
 

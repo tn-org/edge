@@ -33,6 +33,21 @@ timer-driven run never hangs.
 - No reload command is needed to apply config. Routing follows docker events and
   `traefik/dynamic/` is watched for file changes.
 
+### Shared database (optional)
+
+| Command          | Purpose                                      | Arguments                       | Runs on | Called by                 |
+| ---------------- | -------------------------------------------- | ------------------------------- | ------- | ------------------------- |
+| `make db-up`     | Start the shared PostgreSQL instance only    | —                               | both    | manual                    |
+| `make db-down`   | Stop it (data stays in the `pgdata` volume)  | —                               | both    | manual                    |
+| `make db-create` | Create a database and its owner (idempotent) | `NAME=` `[ROLE=]` `[PASSWORD=]` | both    | manual, application setup |
+
+- The instance is one per host; applications share it and differ only by database and
+  role (see "Shared database" in the README).
+- On a server, set `COMPOSE_PROFILES=db` in `.env` so the regular `make up` / `make update`
+  path also carries the database. `db-up` exists for the workstation case, where the
+  proxy stack never runs.
+- `db-create` needs `PASSWORD=` only the first time, while the role does not exist yet.
+
 ### Updates
 
 | Command       | Purpose                                                | Arguments          | Runs on | Called by                            |

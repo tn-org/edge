@@ -95,7 +95,14 @@ fi
 set -a; . ./.env; set +a
 
 fail=0
-for key in ACME_EMAIL CROWDSEC_BOUNCER_KEY; do
+required="ACME_EMAIL CROWDSEC_BOUNCER_KEY"
+# With the db profile enabled the shared PostgreSQL starts on the regular up/update
+# path, and its image refuses to initialise without a superuser password — catch that
+# here instead of as a container crash loop.
+case ",${COMPOSE_PROFILES:-}," in
+  *,db,*) required="$required POSTGRES_PASSWORD" ;;
+esac
+for key in $required; do
   if [ -z "${!key:-}" ]; then
     echo "$key is not set in .env" >&2
     fail=1

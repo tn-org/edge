@@ -67,8 +67,12 @@ services:
     environment:
       # Collections to enable (bundles of parsers and scenarios)
       COLLECTIONS: "crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/base-http-scenarios"
-      # Registers the bouncer at startup, so cscli bouncers add is never needed by hand
-      BOUNCER_KEY_traefik: ${CROWDSEC_BOUNCER_KEY:?CROWDSEC_BOUNCER_KEY is not set (check .env)}
+      # Registers the bouncer at startup, so cscli bouncers add is never needed by hand.
+      # Empty is tolerated at interpolation time (compose interpolates every service even
+      # when only the db profile starts); the real guard is render-config.sh, which every
+      # start path of the proxy stack (make up, make update) runs first and which refuses
+      # an unset key.
+      BOUNCER_KEY_traefik: ${CROWDSEC_BOUNCER_KEY:-}
       TZ: Asia/Tokyo
     volumes:
       - ./crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
@@ -88,6 +92,40 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  # ---------------------------------------------------------------------------
+  # Shared PostgreSQL (optional, profile "db"). One instance per host; every application
+  # gets its own database and role on it (make db-create). Off by default: a host whose
+  # databases live in a managed service (RDS etc.) never starts it. Not routed by
+  # Traefik; reachable from application containers on the shared network under the name
+  # edge-postgres, and from the host itself on loopback only.
+  # On a workstation the same definition provides the one local database instance that
+  # all projects share (make db-up), so nothing else on the machine needs its own.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    container_name: edge-postgres
+    profiles: [db]
+    environment:
+      # Empty is tolerated at interpolation time for the same reason as the bouncer key
+      # above; the guards are make db-up and render-config.sh (when the db profile is on).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Host access for psql, dumps and restores. Loopback only; the network port is
+      # never public. The host-side port is configurable for machines where 5432 is
+      # already taken; containers on the shared network always use 5432.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    networks: [edge]
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   crowdsec-data:
   crowdsec-config:
+  pgdata:
