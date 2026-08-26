@@ -51,6 +51,21 @@ def label_of(scenario: str) -> str:
     return scenario
 
 
+def community_count(payload):
+    """Count decisions pulled from the community blocklists (origin CAPI or lists).
+
+    These are pre-emptive blocks distributed by CrowdSec's central API, not local
+    detections. They number in the thousands and churn constantly, so they are reported
+    as a single figure instead of per-IP rows.
+    """
+    count = 0
+    for _alert, decision in iter_decisions(payload):
+        origin = str(decision.get("origin") or "").lower()
+        if origin in ("capi", "lists"):
+            count += 1
+    return count
+
+
 def load(path):
     """Read the output of cscli -o json. Empty or non-JSON means None (query failed)."""
     try:

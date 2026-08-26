@@ -165,19 +165,21 @@ PY
 
     # "New" counts alerts (detected events) over the last 24 hours.
     # Alerts carry a timestamp, so an exact count needs no state of its own.
-    DEC_FILE="$(mktemp)"; ALERT_FILE="$(mktemp)"
-    trap 'rm -f "$DEC_FILE" "$ALERT_FILE"' EXIT
+    DEC_FILE="$(mktemp)"; ALERT_FILE="$(mktemp)"; ALL_FILE="$(mktemp)"
+    trap 'rm -f "$DEC_FILE" "$ALERT_FILE" "$ALL_FILE"' EXIT
 
     cscli decisions list -o json > "$DEC_FILE" 2>/dev/null || : > "$DEC_FILE"
     cscli alerts list --since 24h -o json > "$ALERT_FILE" 2>/dev/null || : > "$ALERT_FILE"
+    cscli decisions list -a -o json > "$ALL_FILE" 2>/dev/null || : > "$ALL_FILE"
 
-    python3 - "$SCRIPT_DIR" "$DEC_FILE" "$ALERT_FILE" <<'PY' | send "Abuse blocking daily report" routine
+    python3 - "$SCRIPT_DIR" "$DEC_FILE" "$ALERT_FILE" "$ALL_FILE" <<'PY' | send "Abuse blocking daily report" routine
 import sys
 sys.path.insert(0, sys.argv[1])
-from crowdsec_json import iter_decisions, label_of, load
+from crowdsec_json import community_count, iter_decisions, label_of, load
 
 decisions = load(sys.argv[2])
 alerts = load(sys.argv[3])
+all_decisions = load(sys.argv[4])
 
 if decisions is None and alerts is None:
     print("(Could not query CrowdSec. Check docker compose ps crowdsec.)")
@@ -213,6 +215,12 @@ if active:
             print(f"  - and {len(ips) - 20} more (make bans)")
 else:
     print("Currently blocked: none")
+
+# The community blocklist blocks known bad IPs before they can trip a local scenario.
+# Without this line the local figures alone read as "barely defended".
+if all_decisions is not None:
+    print()
+    print(f"Community blocklist: pre-emptively blocking {community_count(all_decisions)} known bad IPs")
 PY
     ;;
   disk-usage)
@@ -290,15 +298,19 @@ PY
     # contract. The shape dates from a fail2ban-era implementation: what used to be a
     # "jail" is a CrowdSec scenario name
     # such as crowdsecurity/http-probing.
-    DEC_FILE="$(mktemp)"; REQ_FILE="$(mktemp)"; RES_FILE="$(mktemp)"; ALLOW_FILE="$(mktemp)"
-    trap 'rm -f "$DEC_FILE" "$REQ_FILE" "$RES_FILE" "$ALLOW_FILE"' EXIT
+    DEC_FILE="$(mktemp)"; REQ_FILE="$(mktemp)"; RES_FILE="$(mktemp)"; ALLOW_FILE="$(mktemp)"; ALL_FILE="$(mktemp)"
+    trap 'rm -f "$DEC_FILE" "$REQ_FILE" "$RES_FILE" "$ALLOW_FILE" "$ALL_FILE"' EXIT
     : > "$RES_FILE"
 
     # Fetch the active decisions as JSON.
     # Leave an empty file when there is nothing, so python can tell it apart from a failed
     # query.
+    # The second call includes community-blocklist decisions (-a). They are sent as a
+    # single count: thousands of externally sourced IPs would drown the console's own
+    # records, and their churn carries no per-IP story worth keeping.
     collect_decisions() {
       cscli decisions list -o json > "$DEC_FILE" 2>/dev/null || : > "$DEC_FILE"
+      cscli decisions list -a -o json > "$ALL_FILE" 2>/dev/null || : > "$ALL_FILE"
     }
 
     # Send the allowlist too, so it can be inspected and edited from the console.
@@ -309,17 +321,21 @@ PY
 
     # Writes the pending operations (id<TAB>action<TAB>ip<TAB>note) to REQ_FILE
     sync_once() {
-      python3 - "${OPS_NOTIFY_URL:-http://127.0.0.1:9090}" "$DEC_FILE" "$RES_FILE" "$REQ_FILE" "$ALLOW_FILE" "$SCRIPT_DIR" <<'PY'
+      python3 - "${OPS_NOTIFY_URL:-http://127.0.0.1:9090}" "$DEC_FILE" "$RES_FILE" "$REQ_FILE" "$ALLOW_FILE" "$SCRIPT_DIR" "$ALL_FILE" <<'PY'
 import json, os, sys, urllib.request
 
-url, dec_file, res_file, req_file, allow_file, script_dir = sys.argv[1:7]
+url, dec_file, res_file, req_file, allow_file, script_dir, all_file = sys.argv[1:8]
 sys.path.insert(0, script_dir)
-from crowdsec_json import banned_at, expires_at, iter_decisions, load
+from crowdsec_json import banned_at, community_count, expires_at, iter_decisions, load
 
 decisions = load(dec_file)
 if decisions is None:
     print("Could not query CrowdSec, not syncing", file=sys.stderr)
     sys.exit(1)
+
+# None (query failed) is different from zero: only send the field when it is countable,
+# so the console keeps its last known figure instead of dropping to 0.
+all_decisions = load(all_file)
 
 # Group by scenario. One group corresponds to one fail2ban jail.
 jails = {}
@@ -371,7 +387,10 @@ try:
 except FileNotFoundError:
     pass
 
-data = json.dumps({"jails": jails, "allowed": allowed, "results": results}).encode()
+payload = {"jails": jails, "allowed": allowed, "results": results}
+if all_decisions is not None:
+    payload["community"] = {"count": community_count(all_decisions)}
+data = json.dumps(payload).encode()
 # Without Accept the hub returns errors as HTML and the cause becomes unreadable
 headers = {"Content-Type": "application/json", "Accept": "application/json"}
 token = os.environ.get("INTERNAL_TOKEN")
