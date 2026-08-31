@@ -1,7 +1,7 @@
 # AWS-side monitoring setup (external checks, database free space)
 
-The notification hub runs on the server itself, so if the instance dies the notifications
-die with it. Two things are therefore placed on AWS managed services to cover that blind
+The ops console that collects the notifications runs on the server itself, so if the
+instance dies the notifications die with it. Two things are therefore placed on AWS managed services to cover that blind
 spot. Both are one-off manual steps in the AWS console.
 
 Do this when you bring up a new host, and name things per host (`<host>` below is that

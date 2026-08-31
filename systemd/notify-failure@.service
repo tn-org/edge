@@ -2,14 +2,12 @@
 # Installed to: /etc/systemd/system/notify-failure@.service
 #
 # Called from other units as OnFailure=notify-failure@%n.service, it passes the name of the
-# failed unit (%i) to notify.sh.
-# If the notification hub is unreachable, the message stays in journald only.
+# failed unit (%i) to notify.sh, which records the notice in the file channel (sync/) and
+# in journald. No environment is needed: notify.sh reads nothing from .env.
 
 [Unit]
 Description=Failure notification: %i
 
 [Service]
 Type=oneshot
-# .env is optional; the '-' keeps the notification handler itself from failing without it
-EnvironmentFile=-/path/to/edge/.env
 ExecStart=/path/to/edge/scripts/notify.sh --failed %i

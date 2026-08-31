@@ -1,7 +1,7 @@
 # ====== Config ======
 # There is one .env, at the repo root. The only key read at parse time is APP_ENV, which
 # structurally has to be known up front (sudo and the run-location guard). Everything else
-# (ACME_EMAIL, INTERNAL_TOKEN, ...) is read inside the recipe or script that uses it.
+# (ACME_EMAIL, CROWDSEC_BOUNCER_KEY, ...) is read inside the recipe or script that uses it.
 # See docs/commands.md for the command list and the rules about where each one runs.
 SHELL := /bin/bash
 

@@ -1,6 +1,8 @@
 #!/bin/bash
-# Notification script. Posts to the notification hub (the ops console's /internal/notify);
-# if that is unreachable the message stays in journald.
+# Notification script. Writes the notice into the host's file channel
+# (sync/state/events/YYYY-MM-DD.ndjson, one JSON object per line) and keeps the full text
+# in journald. The ops console reads the file when it wants to; nothing is sent anywhere,
+# so a host without a console behaves identically.
 # Usage:
 #   notify.sh --failed <unit>          # for systemd OnFailure (error notice plus a journalctl hint)
 #   notify.sh --error <title...>       # error notice (forwarded as mail immediately)
@@ -8,23 +10,15 @@
 #   notify.sh <title...>               # free-form message (info); the body comes from stdin:
 #   notify.sh "title" <<EOF ... EOF
 #
-# The hub runs on the same host and its own compose file publishes it on 127.0.0.1:9090,
-# loopback only. Point somewhere else with OPS_NOTIFY_URL in .env.
+# See scripts/sync-lib.sh for the layout of the channel.
 
 set -uo pipefail
 
-# Read the edge .env (supplies INTERNAL_TOKEN and OPS_NOTIFY_URL, so the values are there
-# even when systemd OnFailure invoked us). Same approach as report.sh; reading it twice
-# does no harm.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-[ -f "$ROOT_DIR/.env" ] && { set -a; . "$ROOT_DIR/.env"; set +a; }
+. "$SCRIPT_DIR/sync-lib.sh"
 
 # The host name is not added; the "host" source field is enough.
-# Empty OPS_NOTIFY_URL means the host has no ops console: keep the message in journald
-# (echoed below) and skip the POST.
-HUB_URL="${OPS_NOTIFY_URL:-http://127.0.0.1:9090}"
-
 if [ "${1:-}" = "--failed" ]; then
   # The systemd OnFailure path. Build a fixed message from the unit name passed as %i.
   UNIT="${2:-unknown.unit}"
@@ -41,44 +35,17 @@ else
     --error) LEVEL="error";   shift ;;
   esac
   TITLE="$*"
-  # The body only comes from stdin (a pipe or heredoc). Without one, send just the title.
+  # The body only comes from stdin (a pipe or heredoc). Without one, record just the title.
   BODY=""
   if [ ! -t 0 ]; then
     BODY="$(cat)"
   fi
 fi
 
-# Keep the full text in journald, so nothing is lost if the hub is unreachable
+# Keep the full text in journald as well, so nothing depends on the file being read
 echo "$TITLE"
 if [ -n "$BODY" ] && [ "$BODY" != "$TITLE" ]; then
   echo "$BODY"
 fi
 
-if [ -z "$HUB_URL" ]; then
-  echo "No ops console configured (OPS_NOTIFY_URL is empty); journald only"
-  exit 0
-fi
-
-python3 - "$HUB_URL" "$LEVEL" "$TITLE" "$BODY" <<'PY'
-import json, os, sys, urllib.request
-url, level, title, body = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-data = json.dumps({
-    "source": "host",
-    "level": level,
-    "title": title[:200],
-    "body": body[:10000] or None,
-}).encode()
-headers = {"Content-Type": "application/json"}
-# Shared token for internal calls (fail-closed: without it the hub returns 403 and the
-# message only stays in journald)
-token = os.environ.get("INTERNAL_TOKEN")
-if token:
-    headers["X-Internal-Token"] = token
-req = urllib.request.Request(url.rstrip("/") + "/internal/notify", data=data,
-                             headers=headers)
-try:
-    urllib.request.urlopen(req, timeout=10)
-    print("Sent to the notification hub")
-except Exception as e:
-    print(f"Failed to reach the notification hub (journald only): {e}", file=sys.stderr)
-PY
+sync_append_event "$LEVEL" "$TITLE" "$BODY" ""

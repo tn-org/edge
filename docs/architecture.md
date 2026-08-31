@@ -42,14 +42,26 @@ application-specific middlewares.
 
 ## Contract with the ops console (do not change)
 
-The host layer does not depend on the ops console, but two touch points are fixed:
+The host layer does not call the ops console at all. The contract is one directory,
+`sync/` at the repo root, which the console mounts from its own compose file:
 
-- `scripts/notify.sh` and `scripts/report.sh` post to the notification hub (the console's
-  `/internal/notify` and friends) at `OPS_NOTIFY_URL` from `.env`, default
-  `http://127.0.0.1:9090`, authenticated with `INTERNAL_TOKEN` from `.env`. The blocking
-  sync endpoint is `/internal/abuse-blocking`. The JSON shape dates from a fail2ban-era
-  implementation and did not change: what used to be a fail2ban "jail" is a CrowdSec
-  scenario name.
+- `sync/state/` is written by `scripts/notify.sh` and `scripts/report.sh` and read by the
+  console. `events/YYYY-MM-DD.ndjson` gets one JSON object per notification, appended;
+  `bans.json`, `timers.json`, `reboot.json` and `disk-usage.json` are full snapshots,
+  rewritten through a `.tmp` file so a reader never sees half of one. The JSON shape dates
+  from a fail2ban-era implementation and did not change: what used to be a fail2ban "jail"
+  is a CrowdSec scenario name.
+- `sync/ops/` is the other direction. The console writes `req-<id>.json`
+  (`kind` = `ban`, `timer` or `reboot`), the host executes it during `host-sync` and writes
+  `res-<id>.json` beside it; the console deletes both once it has taken the result in. A
+  request that already has a result is never run again. What an operation may touch is
+  decided on this side (`is_managed_unit`), never by the request.
+- Permissions: `state/` is 755 with 644 files (the console mounts it read-only), `ops/` is
+  777 with 666 files, because the console container writes there as a different user. The
+  timers run as root and restore ownership after writing, the same way
+  `render-config.sh` does for the generated config.
+- There is no shared secret, no URL and no key in `.env` for any of this. A host without a
+  console writes the same files and nobody reads them.
 - The console publishes itself through the Traefik labels in its own compose file. Both
   sides meet on the shared external docker network named by `EDGE_NETWORK` in `.env`
   (default `edge`).

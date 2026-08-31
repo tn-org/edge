@@ -14,6 +14,7 @@
 #   traefik/generated/lapi-key        CrowdSec LAPI key (mode 600)
 #   crowdsec/generated/allowlist.tsv  allowlist source of truth (IP<TAB>note), edited by ban.sh
 #   crowdsec/generated/whitelist.yaml the CrowdSec parser whitelist built from it
+#   sync/state, sync/ops                the file channel to the ops console (empty dirs here)
 #
 # Usage:
 #   render-config.sh            # everything
@@ -24,6 +25,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
+
+# Layout of the sync/ directory shared with the ops console
+. "$SCRIPT_DIR/sync-lib.sh"
 
 ALLOW_TSV="crowdsec/generated/allowlist.tsv"
 ALLOW_YAML="crowdsec/generated/whitelist.yaml"
@@ -151,6 +155,13 @@ if [ ! -f traefik/acme/acme.json ]; then
 fi
 chmod 600 traefik/acme/acme.json
 mkdir -p logs/traefik
+
+# The file channel to the ops console (scripts/sync-lib.sh). notify.sh and report.sh
+# create it too, but doing it here means it already exists, owned by the deploy user,
+# before the console's compose file mounts it: docker would otherwise create the missing
+# directory as root and the host scripts could no longer write into it.
+sync_prepare
+sync_fix_ownership
 
 # ---- Dashboard (optional) ---------------------------------------------------
 # When DASHBOARD_HOST and DASHBOARD_AUTH are set in .env, publish the Traefik

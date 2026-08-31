@@ -16,6 +16,9 @@ crowdsec/generated/
 # Config hash used by deploy-host.sh, and the pending-reboot timestamp
 .state/
 
+# The file channel to the ops console (state snapshots, events, operation requests)
+sync/
+
 # Logs
 logs/
 

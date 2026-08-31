@@ -89,17 +89,17 @@ installed by `make host-apply`; enable it once per host with
 | `make env`   | Configure `.env` (interactive, or set one key directly) | `[KEY= VALUE=]` `[CMD=check]` (check is read-only) | both    | manual                                       |
 | `make setup` | Full first-run wizard (repeatable, idempotent)          | —                                                  | both    | manual (on a server it initialises the host) |
 
-Four keys need a value on a fresh host: `APP_ENV`, `ACME_EMAIL`, `INTERNAL_TOKEN` and
-`CROWDSEC_BOUNCER_KEY`. `EDGE_NETWORK` and `OPS_NOTIFY_URL` can stay at their defaults
-(the full key list is in `README.md`).
+Three keys need a value on a fresh host: `APP_ENV`, `ACME_EMAIL` and
+`CROWDSEC_BOUNCER_KEY`. `EDGE_NETWORK` can stay at its default (the full key list is in
+`README.md`).
 
 - `CROWDSEC_BOUNCER_KEY` is the shared secret between the Traefik bouncer and CrowdSec.
   Generate it with `openssl rand -hex 32` and put it in `.env`; compose then registers it
   with CrowdSec as a bouncer named `traefik` at startup, so `cscli bouncers add` is never
   needed by hand. If a different key is already registered, run
   `cscli bouncers delete traefik` and start again.
-- `INTERNAL_TOKEN` is one value shared by this host's applications, ops console and host
-  layer.
+- The ops console needs no key here. The host writes into `sync/` and the console reads
+  that directory (see "Talking to the ops console" in `README.md`).
 - If you change `EDGE_NETWORK`, change it in every application's `.env` on that host too.
   It is the real network name, so changing one side breaks connectivity.
 
@@ -118,7 +118,7 @@ since the interval column already says so.
 | Daily 08:15  | Certificate expiry report (warns under 14 days left)         | systemd | report-certs.timer (setup-certs.sh)               | Mail on failure / warning  |
 | Daily 08:20  | Pending reboot check (repeats daily while a reboot is due)   | systemd | report-reboot-check.timer (setup-reboot-check.sh) | Mail on the days it is due |
 | Daily 08:30  | Disk usage per directory                                     | systemd | report-disk-usage.timer (setup-disk-usage.sh)     | Mail on failure            |
-| Every 5 min  | Host state sync and operation execution                      | systemd | host-sync.timer (setup-host-sync.sh)              | Mail on failure            |
+| Every 5 min  | Host state snapshots and operation execution                 | systemd | host-sync.timer (setup-host-sync.sh)              | Mail on failure            |
 | Sunday 06:00 | Remove unused docker images                                  | systemd | docker-prune.timer (setup-docker-prune.sh)        | Mail on failure            |
 
 `edge-update` is the only one disabled by default. It runs only on hosts where somebody
@@ -144,7 +144,8 @@ Assumptions about systemd:
 
 - Everything runs on the host with `Persistent=true` and a `RandomizedDelaySec`, so runs
   missed while the machine was off are caught up at the next boot. Failures are picked up
-  by `notify-failure@` and forwarded to the notification hub.
+  by `notify-failure@`, which records them in journald and in `sync/state/events/`, where
+  the ops console reads them.
 - Installation is a one-time manual step (`scripts/setup-*.sh`, or all at once through
   `make setup` / `make host-apply`).
 

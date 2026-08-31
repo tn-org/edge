@@ -52,10 +52,9 @@ Log in to the server over SSH or a session manager as the deploy user (for examp
    cp .env.example .env
    make env
    ```
-   Set `APP_ENV=production`, `ACME_EMAIL`, `INTERNAL_TOKEN` and `CROWDSEC_BOUNCER_KEY`.
-   Generate the two secrets with `openssl rand -hex 32`. `INTERNAL_TOKEN` must be the
-   same single value across this host's applications, ops console and host layer.
-   Leave `EDGE_NETWORK` and `OPS_NOTIFY_URL` at their defaults.
+   Set `APP_ENV=production`, `ACME_EMAIL` and `CROWDSEC_BOUNCER_KEY`. Generate the
+   secret with `openssl rand -hex 32`. Leave `EDGE_NETWORK` at its default. There is no
+   key for the ops console: the host writes into `sync/` and the console reads it.
 3. Run the full setup (repeatable and idempotent)
    ```
    make setup
@@ -102,7 +101,8 @@ systemctl list-timers edge-update.timer
 ```
 
 Stop it with `sudo systemctl disable --now edge-update.timer`. Failures are picked up by
-`notify-failure@` and forwarded to the notification hub. To try it by hand, run
+`notify-failure@`, which records them in journald and in `sync/state/events/`. To try it
+by hand, run
 `sudo systemctl start edge-update.service` and `journalctl -u edge-update -n 30`.
 
 ## Exposing an application
@@ -129,31 +129,55 @@ networks:
 - Each container keeps its public FQDN in its own `.env` as `PUBLIC_HOST`. The `:?`
   suffix refuses to start when it is unset.
 - Write labels in list form; compose does not expand variables in mapping keys.
-- No host port publishing is needed. The ops console is the exception and keeps
-  `127.0.0.1:9090:9090`, because `report.sh` and `notify.sh` post to it from outside docker.
+- No host port publishing is needed. The host layer never calls into a container either:
+  `report.sh` and `notify.sh` write files under `sync/` and the console reads them.
 - TLS, rate limiting, security headers and blocking are applied to every router by the
   entrypoint's default middlewares. Labels do not need to repeat them.
 - Blocking external access to `/internal/` is the application's job (respond 404 to
   `/internal/` requests that carry `X-Forwarded-For`). That keeps it independent of the
   proxy in front.
 
+## Talking to the ops console
+
+The host layer writes files; it never calls the console. Everything lives in `sync/` at
+the repo root (untracked, created on first write), which the console mounts from its own
+compose file.
+
+```
+sync/
+ ├ state/                    written here, read-only for the console
+ │  ├ events/YYYY-MM-DD.ndjson   one notification per line, appended (dropped after 14 days)
+ │  ├ bans.json                  blocking state snapshot
+ │  ├ timers.json                scheduled job state snapshot
+ │  ├ reboot.json                pending-reboot state snapshot
+ │  └ disk-usage.json            usage per directory (daily)
+ └ ops/                      the console writes req-<id>.json, the host answers res-<id>.json
+```
+
+Snapshots are rewritten in full on every `host-sync` run through a `.tmp` file, so a
+reader never sees half of one. Operation requests (unblock an IP, run a timer, schedule a
+reboot) are picked up by the same run; a request whose `res-` file already exists is never
+run twice, and the console deletes both files once it has taken the result in. Which units
+an operation may touch is decided here (`is_managed_unit` in `scripts/report.sh`), not by
+whoever wrote the request.
+
+There is nothing to configure, and nothing to undo on a host with no console: the files
+are written either way and simply go unread.
+
 ## `.env` keys
 
-| Key                    | Default                 | Description                                                                                           |
-| ---------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------- |
-| `APP_ENV`              | `local`                 | `local` = workstation, anything else = server. Controls sudo and the server-only guard                |
-| `EDGE_NETWORK`         | `edge`                  | Name of the one shared docker network; edge and every application join it as external                 |
-| `ACME_EMAIL`           | —                       | Registration address for Let's Encrypt (where expiry notices go)                                      |
-| `INTERNAL_TOKEN`       | —                       | Shared secret for internal calls; one value across applications, ops console and host layer           |
-| `OPS_NOTIFY_URL`       | `http://127.0.0.1:9090` | Where the notification hub lives; change only if the ops console runs on another host                 |
-| `CROWDSEC_BOUNCER_KEY` | —                       | Shared secret between the Traefik bouncer and the CrowdSec LAPI; compose refuses to start without it  |
-| `COMPOSE_PROFILES`     | —                       | Optional services to include in `up`/`update`; `db` adds the shared PostgreSQL instance               |
-| `POSTGRES_PASSWORD`    | —                       | Superuser password of the shared PostgreSQL instance; read only when the db service starts            |
-| `POSTGRES_PORT`        | `5432`                  | Host-side loopback port of the shared PostgreSQL instance; containers always use `edge-postgres:5432` |
+| Key                    | Default | Description                                                                                           |
+| ---------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
+| `APP_ENV`              | `local` | `local` = workstation, anything else = server. Controls sudo and the server-only guard                |
+| `EDGE_NETWORK`         | `edge`  | Name of the one shared docker network; edge and every application join it as external                 |
+| `ACME_EMAIL`           | —       | Registration address for Let's Encrypt (where expiry notices go)                                      |
+| `CROWDSEC_BOUNCER_KEY` | —       | Shared secret between the Traefik bouncer and the CrowdSec LAPI; compose refuses to start without it  |
+| `COMPOSE_PROFILES`     | —       | Optional services to include in `up`/`update`; `db` adds the shared PostgreSQL instance               |
+| `POSTGRES_PASSWORD`    | —       | Superuser password of the shared PostgreSQL instance; read only when the db service starts            |
+| `POSTGRES_PORT`        | `5432`  | Host-side loopback port of the shared PostgreSQL instance; containers always use `edge-postgres:5432` |
 
-Generate `INTERNAL_TOKEN` and `CROWDSEC_BOUNCER_KEY` with `openssl rand -hex 32`. `.env`
-is not tracked by git and exists only on the server. Compare it against the example with
-`make env CMD=check`.
+Generate `CROWDSEC_BOUNCER_KEY` with `openssl rand -hex 32`. `.env` is not tracked by git
+and exists only on the server. Compare it against the example with `make env CMD=check`.
 
 ## Shared database (optional)
 

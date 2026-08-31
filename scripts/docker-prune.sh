@@ -29,8 +29,8 @@ RECLAIMED="$(printf '%s\n' "$PRUNE_OUT" | grep -i 'reclaimed' | tail -1 || true)
 echo ""
 echo "===== Unused image cleanup: done ====="
 
-# Report the result to the notification hub (journald only when unconfigured). A failed
-# notification must not fail the job.
+# Record the result for the ops console (and in journald). A failed notification must not
+# fail the job.
 # It arrives every week, so a missing week means the timer stopped.
 "$SCRIPT_DIR/notify.sh" "Unused image cleanup" <<EOF || true
 Result: success

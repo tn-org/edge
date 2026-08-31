@@ -1,16 +1,17 @@
 #!/bin/bash
-# Event-driven operational reports. Posts to the notification hub (the ops console's
-# /internal/notify); if that fails, the message stays in journald.
-# Multi-line bodies are JSON-encoded with python3 so newlines and special characters
-# cannot break the payload.
+# Event-driven operational reports. Nothing is sent anywhere: state snapshots, events and
+# operation results are written into the host's file channel under sync/, and the ops
+# console reads them from there. See scripts/sync-lib.sh for the layout. A host with no
+# console writes exactly the same files and nobody reads them.
+# JSON is built with python3, so newlines and special characters in a body cannot break it.
 # Usage:
 #   report.sh certs       # days left per certificate; warn when any is under 14 days
 #   report.sh os          # read the dnf-automatic body on stdin, notify if anything was applied
-#   report.sh bans        # notify a summary of blocking status
-#   report.sh disk-usage  # record usage per directory in the console (no notification)
-#   report.sh bans-sync   # sync blocking state to the console and run unblock requests (no notification)
-#   report.sh timers      # sync systemd timer state to the console and run operations (no notification)
-#   report.sh reboot-sync # sync reboot state to the console and apply scheduled reboots (no notification)
+#   report.sh bans        # record a summary of blocking status as a notification
+#   report.sh disk-usage  # write usage per directory to sync/state (no notification)
+#   report.sh bans-sync   # write blocking state and run the queued IP operations (no notification)
+#   report.sh timers      # write systemd timer state and run the queued operations (no notification)
+#   report.sh reboot-sync # write reboot state and apply the scheduled reboots (no notification)
 #   report.sh host-sync   # run bans-sync, timers and reboot-sync together (called by host-sync.timer)
 #   report.sh reboot-check # detect a pending reboot after a kernel update and warn daily while it lasts
 
@@ -18,15 +19,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-[ -f "$ROOT_DIR/.env" ] && { set -a; . "$ROOT_DIR/.env"; set +a; }
-
-# A host without an ops console sets OPS_NOTIFY_URL to empty in .env. Every report and
-# sync here targets the console, so exit quietly instead of failing the timers daily.
-# Unset still means the default URL (a console on the same host).
-if [ -n "${OPS_NOTIFY_URL+x}" ] && [ -z "$OPS_NOTIFY_URL" ]; then
-  echo "No ops console configured (OPS_NOTIFY_URL is empty); nothing to report"
-  exit 0
-fi
+. "$SCRIPT_DIR/sync-lib.sh"
 
 # The CrowdSec CLI only exists inside the container, so go through compose.
 # Empty or non-JSON output must not crash the caller; callers check the result themselves.
@@ -34,60 +27,17 @@ cscli() {
   ( cd "$ROOT_DIR" && sudo docker compose exec -T crowdsec cscli "$@" )
 }
 
-# Retry a sync to the console a few times.
-#
-# The peer is the ops console container on the same host, and a deployment or a brief
-# stall shows up as a connection reset. The next run five minutes later would succeed, but
-# that single failure fails the unit and fires an OnFailure notification.
-# What is sent is a snapshot of current state, so resending the same content is harmless.
-retry_sync() {
-  local attempt=1
-  while true; do
-    "$@" && return 0
-    if [ "$attempt" -ge 3 ]; then
-      return 1
-    fi
-    echo "Sync failed, retrying (${attempt}/2)" >&2
-    attempt=$((attempt + 1))
-    sleep 5
-  done
-}
-
-# $1=title, stdin=body (may be multi-line). Keeps it in journald and posts it to the hub.
-# $2="routine" marks it as a routine heartbeat, which the hub excludes from lists and
-# unread badges by default.
+# $1=title, stdin=body (may be multi-line). Keeps it in journald and appends it to the
+# event file the console reads. $2="routine" marks it as a routine heartbeat, which the
+# console excludes from lists and unread badges by default.
 send() {
   local title="$1" routine="${2:-}" body
   body="$(cat)"
   echo "=== $title ==="
   echo "$body"
-  # Display-only mode (make bans and friends): print to stdout, do not post.
+  # Display-only mode (make bans and friends): print to stdout, record nothing.
   [ "${NOTIFY_DISABLE:-}" = 1 ] && return 0
-  python3 - "${OPS_NOTIFY_URL:-http://127.0.0.1:9090}" "$title" "$body" "$routine" <<'PY'
-import json, os, sys, urllib.request
-url, title, body, routine = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-data = json.dumps({
-    "source": "host",
-    "level": "info",
-    "routine": routine == "routine",
-    "title": title[:200],
-    "body": body[:10000] or None,
-}).encode()
-# Without Accept the hub returns errors as HTML and the cause becomes unreadable
-headers = {"Content-Type": "application/json", "Accept": "application/json"}
-# Shared token for internal calls (fail-closed: without it the hub returns 403 and the
-# message only stays in journald)
-token = os.environ.get("INTERNAL_TOKEN")
-if token:
-    headers["X-Internal-Token"] = token
-req = urllib.request.Request(url.rstrip("/") + "/internal/notify", data=data,
-                             headers=headers)
-try:
-    urllib.request.urlopen(req, timeout=10)
-    print("Sent to the notification hub")
-except Exception as e:
-    print(f"Failed to reach the notification hub: {e}", file=sys.stderr)
-PY
+  sync_append_event info "$title" "$body" "$routine"
 }
 
 case "${1:-}" in
@@ -160,7 +110,7 @@ PY
     fi
     ;;
   bans)
-    # --no-notify suppresses the post to the hub (display only, used by make bans)
+    # --no-notify records nothing for the console (display only, used by make bans)
     [ "${2:-}" = "--no-notify" ] && NOTIFY_DISABLE=1
 
     # "New" counts alerts (detected events) over the last 24 hours.
@@ -225,7 +175,7 @@ PY
     ;;
   disk-usage)
     # The ops console runs in a container, so du there cannot see the host's
-    # /var/lib/docker and similar. Measure on the host and send only the record; there is
+    # /var/lib/docker and similar. Measure on the host and write the record; there is
     # no notification, this is material for tracing growth on screen later.
     # It walks the whole filesystem and takes tens of seconds, hence a daily timer.
     # The measurement is passed through a temporary file: the python program itself is fed
@@ -240,10 +190,11 @@ PY
       exit 1
     fi
 
-    python3 - "${OPS_NOTIFY_URL:-http://127.0.0.1:9090}" "$DU_FILE" <<'PY'
-import json, os, sys, urllib.request
+    sync_prepare
+    python3 - "$SYNC_STATE_DIR/disk-usage.json.tmp" "$DU_FILE" <<'PY' || exit 1
+import datetime, json, sys
 
-url, du_file = sys.argv[1], sys.argv[2]
+dest, du_file = sys.argv[1], sys.argv[2]
 # Below the second level keep only the big entries (/var/lib/docker is worth seeing, the
 # small branches are not). The first level (/var, /home, ...) is kept regardless of size,
 # because it is the entry point on screen.
@@ -260,7 +211,7 @@ with open(du_file, encoding="utf-8", errors="replace") as f:
         except ValueError:
             continue
         path = parts[1]
-        # The console already records the root total from df, so do not send it
+        # The console already records the root total from df, so leave it out
         if path == "/":
             continue
         if path.count("/") >= 2 and size < MIN_DEEP_BYTES:
@@ -274,66 +225,60 @@ if not entries:
     print("Nothing to record", file=sys.stderr)
     sys.exit(1)
 
-data = json.dumps({"scope": "/", "entries": entries}).encode()
-# Without Accept the hub returns errors as HTML and the cause becomes unreadable
-headers = {"Content-Type": "application/json", "Accept": "application/json"}
-token = os.environ.get("INTERNAL_TOKEN")
-if token:
-    headers["X-Internal-Token"] = token
-req = urllib.request.Request(url.rstrip("/") + "/internal/capacity", data=data, headers=headers)
-try:
-    urllib.request.urlopen(req, timeout=30)
-    print(f"Recorded disk usage per directory ({len(entries)} entries)")
-except Exception as e:
-    print(f"Failed to record usage: {e}", file=sys.stderr)
-    sys.exit(1)
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump({
+        "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "scope": "/",
+        "entries": entries,
+    }, f)
+print(f"Recorded disk usage per directory ({len(entries)} entries)")
 PY
+    sync_commit_state disk-usage.json
     ;;
   bans-sync)
-    # CrowdSec lives inside a container, so send its state to the console, take back the
-    # queued operation requests and run them. One invocation covers send, execute and
-    # report back.
+    # CrowdSec lives inside a container, so write its state out as a snapshot the console
+    # can read, then carry out the IP operations the console has queued in sync/ops. One
+    # invocation covers writing the state, executing and reporting the result back.
     #
-    # The console endpoint (POST /internal/abuse-blocking) and its JSON shape are a stable
-    # contract. The shape dates from a fail2ban-era implementation: what used to be a
-    # "jail" is a CrowdSec scenario name
+    # The JSON shape is a stable contract with the console. It dates from a fail2ban-era
+    # implementation: what used to be a "jail" is a CrowdSec scenario name
     # such as crowdsecurity/http-probing.
-    DEC_FILE="$(mktemp)"; REQ_FILE="$(mktemp)"; RES_FILE="$(mktemp)"; ALLOW_FILE="$(mktemp)"; ALL_FILE="$(mktemp)"
-    trap 'rm -f "$DEC_FILE" "$REQ_FILE" "$RES_FILE" "$ALLOW_FILE" "$ALL_FILE"' EXIT
-    : > "$RES_FILE"
+    DEC_FILE="$(mktemp)"; REQ_FILE="$(mktemp)"; ALLOW_FILE="$(mktemp)"; ALL_FILE="$(mktemp)"
+    trap 'rm -f "$DEC_FILE" "$REQ_FILE" "$ALLOW_FILE" "$ALL_FILE"' EXIT
 
     # Fetch the active decisions as JSON.
     # Leave an empty file when there is nothing, so python can tell it apart from a failed
     # query.
-    # The second call includes community-blocklist decisions (-a). They are sent as a
-    # single count: thousands of externally sourced IPs would drown the console's own
-    # records, and their churn carries no per-IP story worth keeping.
+    # The second call includes community-blocklist decisions (-a). They go into the
+    # snapshot as a single count: thousands of externally sourced IPs would drown the
+    # console's own records, and their churn carries no per-IP story worth keeping.
     collect_decisions() {
       cscli decisions list -o json > "$DEC_FILE" 2>/dev/null || : > "$DEC_FILE"
       cscli decisions list -a -o json > "$ALL_FILE" 2>/dev/null || : > "$ALL_FILE"
     }
 
-    # Send the allowlist too, so it can be inspected and edited from the console.
+    # Publish the allowlist too, so it can be inspected and edited from the console.
     # The source of truth is crowdsec/generated/allowlist.tsv (one line = IP<TAB>note).
     collect_allowed() {
       cat "$ROOT_DIR/crowdsec/generated/allowlist.tsv" > "$ALLOW_FILE" 2>/dev/null || : > "$ALLOW_FILE"
     }
 
-    # Writes the pending operations (id<TAB>action<TAB>ip<TAB>note) to REQ_FILE
-    sync_once() {
-      python3 - "${OPS_NOTIFY_URL:-http://127.0.0.1:9090}" "$DEC_FILE" "$RES_FILE" "$REQ_FILE" "$ALLOW_FILE" "$SCRIPT_DIR" "$ALL_FILE" <<'PY'
-import json, os, sys, urllib.request
+    # Snapshot of the current blocking state. Operation results are not part of it; they
+    # are written next to the request in sync/ops.
+    write_bans() {
+      python3 - "$SYNC_STATE_DIR/bans.json.tmp" "$DEC_FILE" "$ALLOW_FILE" "$SCRIPT_DIR" "$ALL_FILE" <<'PY'
+import datetime, json, sys
 
-url, dec_file, res_file, req_file, allow_file, script_dir, all_file = sys.argv[1:8]
+dest, dec_file, allow_file, script_dir, all_file = sys.argv[1:6]
 sys.path.insert(0, script_dir)
 from crowdsec_json import banned_at, community_count, expires_at, iter_decisions, load
 
 decisions = load(dec_file)
 if decisions is None:
-    print("Could not query CrowdSec, not syncing", file=sys.stderr)
+    print("Could not query CrowdSec, keeping the previous snapshot", file=sys.stderr)
     sys.exit(1)
 
-# None (query failed) is different from zero: only send the field when it is countable,
+# None (query failed) is different from zero: only write the field when it is countable,
 # so the console keeps its last known figure instead of dropping to 0.
 all_decisions = load(all_file)
 
@@ -345,7 +290,7 @@ for alert, decision in iter_decisions(decisions):
         "name": scenario,
         "currentlyBanned": 0,
         # CrowdSec has no counter equivalent to "total since install".
-        # The console's ban_records holds the long-term total, so send the current count.
+        # The console's ban_records holds the long-term total, so write the current count.
         "totalBanned": 0,
         "ips": [],
     })
@@ -363,14 +308,6 @@ for jail in jails.values():
 
 jails = list(jails.values())[:50]
 
-results = []
-with open(res_file, encoding="utf-8", errors="replace") as f:
-    for line in f:
-        cols = line.rstrip("\n").split("\t", 1)
-        if not cols[0]:
-            continue
-        results.append({"id": int(cols[0]), "error": (cols[1] if len(cols) > 1 and cols[1] else None)})
-
 allowed = []
 try:
     with open(allow_file, encoding="utf-8", errors="replace") as f:
@@ -387,75 +324,53 @@ try:
 except FileNotFoundError:
     pass
 
-payload = {"jails": jails, "allowed": allowed, "results": results}
+payload = {
+    "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "jails": jails,
+    "allowed": allowed,
+}
 if all_decisions is not None:
     payload["community"] = {"count": community_count(all_decisions)}
-data = json.dumps(payload).encode()
-# Without Accept the hub returns errors as HTML and the cause becomes unreadable
-headers = {"Content-Type": "application/json", "Accept": "application/json"}
-token = os.environ.get("INTERNAL_TOKEN")
-if token:
-    headers["X-Internal-Token"] = token
-req = urllib.request.Request(url.rstrip("/") + "/internal/abuse-blocking", data=data, headers=headers)
-try:
-    with urllib.request.urlopen(req, timeout=30) as res:
-        raw = res.read().decode(errors="replace")
-except urllib.error.HTTPError as e:
-    detail = e.read().decode(errors="replace")[:300]
-    print(f"Failed to sync blocking state: HTTP {e.code} {detail}", file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"Failed to sync blocking state: {e}", file=sys.stderr)
-    sys.exit(1)
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump(payload, f)
 
-try:
-    body = json.loads(raw)
-except ValueError:
-    # During a deployment the console is being replaced and may answer with non-JSON.
-    # The next run recovers.
-    print(f"Blocking state sync returned non-JSON: {raw[:300]!r}", file=sys.stderr)
-    sys.exit(1)
-
-pending = body.get("operations") or []
-with open(req_file, "w", encoding="utf-8") as f:
-    for r in pending:
-        note = (r.get("note") or "").replace("\t", " ").replace("\n", " ")
-        f.write(f"{r['id']}\t{r['action']}\t{r['ip']}\t{note}\n")
-
-print(f"Synced blocking state ({len(jails)} scenarios, {len(allowed)} allowlisted, {len(pending)} operations)")
+print(f"Wrote blocking state ({len(jails)} scenarios, {len(allowed)} allowlisted)")
 PY
     }
 
+    sync_prepare
     collect_decisions
     collect_allowed
-    retry_sync sync_once || exit 1
+    write_bans || exit 1
+    sync_commit_state bans.json
 
-    # If there are operations, run them, re-read the state and send it back with the
-    # results. ban.sh does the work, so make ban and the console go through the same path.
+    # Operations queued by the console. ban.sh does the work, so make ban and the console
+    # go through the same path. Afterwards the state has changed, so write it again.
+    sync_pending_ops ban ip note > "$REQ_FILE"
     if [ -s "$REQ_FILE" ]; then
       while IFS=$'\t' read -r id action ip note; do
         [ -n "$id" ] || continue
         if err="$("$SCRIPT_DIR/ban.sh" "$action" "$ip" "$note" 2>&1)"; then
-          printf '%s\t\n' "$id" >> "$RES_FILE"
+          sync_write_op_result "$id" ""
           echo "ok: $action $ip"
         else
-          printf '%s\t%s\n' "$id" "$(printf '%s' "$err" | tail -1 | cut -c1-300)" >> "$RES_FILE"
+          sync_write_op_result "$id" "$(printf '%s' "$err" | tail -1 | cut -c1-300)"
           echo "failed: $action $ip: $err" >&2
         fi
       done < "$REQ_FILE"
 
       collect_decisions
       collect_allowed
-      retry_sync sync_once || exit 1
+      write_bans || exit 1
+      sync_commit_state bans.json
     fi
     ;;
   timers)
-    # Send the list of scheduled jobs to the console and run the operations queued there.
+    # Write the list of scheduled jobs for the console and run the operations it queued.
     # "Notify on failure" alone cannot tell you that a timer stopped running at all, so
-    # send whether it is alive, when it runs next and how the last run went.
-    TASK_FILE="$(mktemp)"; TREQ_FILE="$(mktemp)"; TRES_FILE="$(mktemp)"
-    trap 'rm -f "$TASK_FILE" "$TREQ_FILE" "$TRES_FILE"' EXIT
-    : > "$TRES_FILE"
+    # publish whether it is alive, when it runs next and how the last run went.
+    TASK_FILE="$(mktemp)"; TREQ_FILE="$(mktemp)"
+    trap 'rm -f "$TASK_FILE" "$TREQ_FILE"' EXIT
 
     # Pull a single property out of systemctl show output
     prop() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1; }
@@ -481,7 +396,7 @@ PY
     # Deciding by "does the unit file point back into the repo" does not work: units that
     # are copied into systemd's standard location are ours as well.
     # Units that ship with the OS and that this repo does not configure (man page indexing
-    # and the like) are not sent. logrotate is included even though the unit belongs to the
+    # and the like) are left out. logrotate is included even though the unit belongs to the
     # OS, because the configuration comes from here.
     is_managed_unit() {
       case "$1" in
@@ -564,11 +479,11 @@ PY
       done
     }
 
-    sync_tasks() {
-      python3 - "${OPS_NOTIFY_URL:-http://127.0.0.1:9090}" "$TASK_FILE" "$TRES_FILE" "$TREQ_FILE" <<'PY'
-import base64, json, os, sys, urllib.request
+    write_tasks() {
+      python3 - "$SYNC_STATE_DIR/timers.json.tmp" "$TASK_FILE" <<'PY'
+import base64, datetime, json, sys
 
-url, task_file, res_file, req_file = sys.argv[1:5]
+dest, task_file = sys.argv[1:3]
 
 def num(v):
     return int(v) if v.strip().isdigit() else None
@@ -585,7 +500,6 @@ def logs(v):
 
 def stamp(v):
     # epoch seconds -> ISO 8601 (UTC); the console parses it as a date
-    import datetime
     n = num(v)
     if n is None:
         return None
@@ -612,57 +526,24 @@ with open(task_file, encoding="utf-8", errors="replace") as f:
         })
 tasks = tasks[:100]
 
-results = []
-with open(res_file, encoding="utf-8", errors="replace") as f:
-    for line in f:
-        c = line.rstrip("\n").split("\t", 1)
-        if not c[0]:
-            continue
-        results.append({"id": int(c[0]), "error": (c[1] if len(c) > 1 and c[1] else None)})
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump({
+        "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "tasks": tasks,
+    }, f)
 
-data = json.dumps({"tasks": tasks, "results": results}).encode()
-# Without Accept the hub returns errors as HTML and the cause becomes unreadable
-headers = {"Content-Type": "application/json", "Accept": "application/json"}
-token = os.environ.get("INTERNAL_TOKEN")
-if token:
-    headers["X-Internal-Token"] = token
-req = urllib.request.Request(url.rstrip("/") + "/internal/scheduled-tasks", data=data, headers=headers)
-try:
-    with urllib.request.urlopen(req, timeout=30) as res:
-        raw = res.read().decode(errors="replace")
-except urllib.error.HTTPError as e:
-    detail = e.read().decode(errors="replace")[:300]
-    print(f"Failed to sync scheduled tasks: HTTP {e.code} {detail}", file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"Failed to sync scheduled tasks: {e}", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    body = json.loads(raw)
-except ValueError:
-    # During a deployment the console is being replaced and may answer with non-JSON.
-    # The next run recovers.
-    print(f"Scheduled task sync returned non-JSON: {raw[:300]!r}", file=sys.stderr)
-    sys.exit(1)
-
-pending = body.get("operations") or []
-with open(req_file, "w", encoding="utf-8") as f:
-    for r in pending:
-        f.write(f"{r['id']}\t{r['action']}\t{r['key']}\n")
-
-print(f"Synced scheduled tasks ({len(tasks)} tasks, {len(pending)} operations)")
+print(f"Wrote scheduled task state ({len(tasks)} tasks)")
 PY
     }
 
     # Carrying out an operation. "run" does not wait for completion, because a job can take
-    # minutes and the sync would time out.
+    # minutes and this pass must not sit waiting for it.
     operate_unit() {
       local action="$1" unit="$2" svc
 
-      # Operation requests arrive through the console database. The console restricts the
+      # Operation requests arrive as files the console writes. The console restricts the
       # units it offers, but this effectively hands root systemctl to whoever can write
-      # that table, so check here as well.
+      # into sync/ops, so check here as well.
       # Units that are not on the list (sshd and so on) are never touched, even if named.
       if ! is_managed_unit "$unit"; then
         echo "unit not handled: $unit" >&2
@@ -682,32 +563,35 @@ PY
       esac
     }
 
+    sync_prepare
     collect_tasks
-    retry_sync sync_tasks || exit 1
+    write_tasks || exit 1
+    sync_commit_state timers.json
 
+    sync_pending_ops timer key > "$TREQ_FILE"
     if [ -s "$TREQ_FILE" ]; then
       while IFS=$'\t' read -r id action unit; do
         [ -n "$id" ] || continue
         if err="$(operate_unit "$action" "$unit" 2>&1)"; then
-          printf '%s\t\n' "$id" >> "$TRES_FILE"
+          sync_write_op_result "$id" ""
           echo "ok: $action $unit"
         else
-          printf '%s\t%s\n' "$id" "$(printf '%s' "$err" | tail -1 | cut -c1-500)" >> "$TRES_FILE"
+          sync_write_op_result "$id" "$(printf '%s' "$err" | tail -1 | cut -c1-500)"
           echo "failed: $action $unit: $err" >&2
         fi
       done < "$TREQ_FILE"
 
       collect_tasks
-      retry_sync sync_tasks || exit 1
+      write_tasks || exit 1
+      sync_commit_state timers.json
     fi
     ;;
   reboot-sync)
-    # Send the pending-reboot state to the console and carry out the reboots scheduled from
-    # its screens. The console runs in a container and cannot reboot the host; this is the
-    # only place that can.
-    RES_FILE="$(mktemp)"; REQ_FILE="$(mktemp)"
-    trap 'rm -f "$RES_FILE" "$REQ_FILE"' EXIT
-    : > "$RES_FILE"
+    # Write the pending-reboot state for the console and carry out the reboots scheduled
+    # from its screens. The console runs in a container and cannot reboot the host; this is
+    # the only place that can.
+    REQ_FILE="$(mktemp)"
+    trap 'rm -f "$REQ_FILE"' EXIT
 
     # Is a reboot pending because of a kernel or similar update?
     reboot_required() {
@@ -729,58 +613,22 @@ PY
       date -u -d "$(uptime -s)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
     }
 
-    sync_reboot() {
-      python3 - "${OPS_NOTIFY_URL:-http://127.0.0.1:9090}" "$1" "$2" "$3" "$4" "$RES_FILE" "$REQ_FILE" <<'PY'
-import json, os, sys, urllib.request
+    write_reboot() {
+      python3 - "$SYNC_STATE_DIR/reboot.json.tmp" "$1" "$2" "$3" "$4" <<'PY'
+import datetime, json, sys
 
-url, required, since, scheduled, booted, res_file, req_file = sys.argv[1:8]
+dest, required, since, scheduled, booted = sys.argv[1:6]
 
-results = []
-with open(res_file, encoding="utf-8", errors="replace") as f:
-    for line in f:
-        c = line.rstrip("\n").split("\t", 1)
-        if not c[0]:
-            continue
-        results.append({"id": int(c[0]), "error": (c[1] if len(c) > 1 and c[1] else None)})
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump({
+        "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "required": required == "1",
+        "requiredSince": since or None,
+        "scheduledFor": scheduled or None,
+        "bootedAt": booted or None,
+    }, f)
 
-data = json.dumps({
-    "required": required == "1",
-    "requiredSince": since or None,
-    "scheduledFor": scheduled or None,
-    "bootedAt": booted or None,
-    "results": results,
-}).encode()
-# Without Accept the hub returns errors as HTML and the cause becomes unreadable
-headers = {"Content-Type": "application/json", "Accept": "application/json"}
-token = os.environ.get("INTERNAL_TOKEN")
-if token:
-    headers["X-Internal-Token"] = token
-req = urllib.request.Request(url.rstrip("/") + "/internal/reboot", data=data, headers=headers)
-try:
-    with urllib.request.urlopen(req, timeout=30) as res:
-        raw = res.read().decode(errors="replace")
-except urllib.error.HTTPError as e:
-    detail = e.read().decode(errors="replace")[:300]
-    print(f"Failed to sync reboot state: HTTP {e.code} {detail}", file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"Failed to sync reboot state: {e}", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    body = json.loads(raw)
-except ValueError:
-    # During a deployment the console is being replaced and may answer with non-JSON.
-    # The next run recovers.
-    print(f"Reboot state sync returned non-JSON: {raw[:300]!r}", file=sys.stderr)
-    sys.exit(1)
-
-pending = body.get("operations") or []
-with open(req_file, "w", encoding="utf-8") as f:
-    for r in pending:
-        f.write(f"{r['id']}\t{r['action']}\t{r.get('scheduledFor') or ''}\n")
-
-print(f"Synced reboot state ({len(pending)} operations)")
+print("Wrote reboot state")
 PY
     }
 
@@ -790,7 +638,7 @@ PY
       case "$action" in
         schedule)
           [ -n "$at" ] || { echo "no scheduled time given" >&2; return 1; }
-          # shutdown takes local time as hh:mm; the console sends UTC ISO 8601
+          # shutdown takes local time as hh:mm; the request carries UTC ISO 8601
           local_time="$(date -d "$at" +%H:%M)" || return 1
           sudo shutdown -r "$local_time" "Reboot scheduled from the ops console"
           ;;
@@ -810,29 +658,37 @@ PY
       rm -f "$STATE_FILE"
     fi
 
-    retry_sync sync_reboot "$required" "$since" "$(scheduled_at)" "$(booted_at)" || exit 1
+    sync_prepare
+    write_reboot "$required" "$since" "$(scheduled_at)" "$(booted_at)" || exit 1
+    sync_commit_state reboot.json
 
+    sync_pending_ops reboot scheduledFor > "$REQ_FILE"
     if [ -s "$REQ_FILE" ]; then
       while IFS=$'\t' read -r id action at; do
         [ -n "$id" ] || continue
         if err="$(operate_reboot "$action" "$at" 2>&1)"; then
-          printf '%s\t\n' "$id" >> "$RES_FILE"
+          sync_write_op_result "$id" ""
           echo "ok: $action ${at:-now}"
         else
-          printf '%s\t%s\n' "$id" "$(printf '%s' "$err" | tail -1 | cut -c1-300)" >> "$RES_FILE"
+          sync_write_op_result "$id" "$(printf '%s' "$err" | tail -1 | cut -c1-300)"
           echo "failed: $action: $err" >&2
         fi
       done < "$REQ_FILE"
 
-      retry_sync sync_reboot "$required" "$since" "$(scheduled_at)" "$(booted_at)" || exit 1
+      write_reboot "$required" "$since" "$(scheduled_at)" "$(booted_at)" || exit 1
+      sync_commit_state reboot.json
     fi
     ;;
   host-sync)
-    # The five-minute periodic sync. If one part fails, the rest still run.
+    # The periodic pass over the file channel: refresh every state snapshot and run
+    # whatever the console has queued. If one part fails, the rest still run.
     rc=0
     "$0" bans-sync || rc=1
     "$0" timers || rc=1
     "$0" reboot-sync || rc=1
+    # Events are the only thing that accumulates. Nothing else prunes them on a host with
+    # no console, so drop them here after two weeks.
+    sync_prune_events 14
     exit "$rc"
     ;;
   reboot-check)

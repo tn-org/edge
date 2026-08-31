@@ -44,10 +44,14 @@ within a day.
 
 ## 2. Recording blocks
 
-The host syncs blocking state to the ops console over `POST /internal/abuse-blocking`. The
-console appends to its `ban_records` table and never deletes: the unique key is
-`(jail, ip, banned_at)`, and "currently blocked" means `released_at is null` and
-`expires_at` in the future.
+The host writes the blocking state to `sync/state/bans.json`, a full snapshot rewritten on
+every `host-sync` run, and the ops console reads it from there. The console appends to its
+`ban_records` table and never deletes: the unique key is `(jail, ip, banned_at)`, and
+"currently blocked" means `released_at is null` and `expires_at` in the future.
+
+Unblock and allowlist requests come back the other way as `sync/ops/req-<id>.json` with
+`kind: "ban"`. `report.sh bans-sync` runs each one through `ban.sh` — the same path as
+`make ban` — and writes `res-<id>.json` beside it.
 
 The field names date from a fail2ban implementation and are kept as
 a stable contract. What used to be a jail name is now a CrowdSec scenario name such as
