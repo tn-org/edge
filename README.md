@@ -43,10 +43,19 @@ Log in to the server over SSH or a session manager as the deploy user (for examp
 
 1. Clone the repo into its fixed location
    ```
+   sudo dnf install -y git
    sudo mkdir -p /app && sudo chown "$USER:$USER" /app
    git clone https://github.com/tn-org/edge.git /app/edge
    ```
-2. Create `.env` and fill it in
+2. Prepare the host runtime (docker, the compose plugin, make — a fresh
+   Amazon Linux 2023 AMI ships none of them)
+   ```
+   cd /app/edge
+   bash scripts/bootstrap-host.sh
+   ```
+   Idempotent; run it again freely. Log out and back in once afterwards so the
+   docker group membership takes effect.
+3. Create `.env` and fill it in
    ```
    cd /app/edge
    cp .env.example .env
@@ -55,7 +64,7 @@ Log in to the server over SSH or a session manager as the deploy user (for examp
    Set `APP_ENV=production`, `ACME_EMAIL` and `CROWDSEC_BOUNCER_KEY`. Generate the
    secret with `openssl rand -hex 32`. Leave `EDGE_NETWORK` at its default. There is no
    key for the ops console: the host writes into `sync/` and the console reads it.
-3. Run the full setup (repeatable and idempotent)
+4. Run the full setup (repeatable and idempotent)
    ```
    make setup
    ```
@@ -63,7 +72,7 @@ Log in to the server over SSH or a session manager as the deploy user (for examp
    applies the `/etc` files and systemd timers (log rotation, OS auto-updates, blocking
    report, disk usage record, host sync). The auto-follow timer (`edge-update`) is
    installed but deliberately left disabled.
-4. Verify
+5. Verify
    ```
    make ps
    docker compose logs traefik | grep -i acme
