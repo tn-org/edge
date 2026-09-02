@@ -18,8 +18,10 @@ sudo dnf install -y git make docker
 echo "Enabling docker..."
 sudo systemctl enable --now docker
 
-echo "Adding $USER to the docker group..."
-sudo usermod -aG docker "$USER"
+# $USER can be unset in a Session Manager shell; derive the name instead
+user="$(id -un)"
+echo "Adding ${user} to the docker group..."
+sudo usermod -aG docker "${user}"
 
 # docker compose is a CLI plugin; AL2023's docker rpm does not ship it
 if docker compose version >/dev/null 2>&1; then
