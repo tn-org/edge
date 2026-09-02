@@ -3,7 +3,7 @@
 # and helpers. Run once right after cloning this repo; safe to re-run (idempotent).
 #
 #   sudo dnf install -y git
-#   sudo mkdir -p /app && sudo chown "$USER:$USER" /app
+#   sudo mkdir -p /app && sudo chown "$(id -un):$(id -gn)" /app
 #   git clone https://github.com/tn-org/edge.git /app/edge
 #   cd /app/edge && bash scripts/bootstrap-host.sh
 #

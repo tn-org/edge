@@ -44,7 +44,7 @@ Log in to the server over SSH or a session manager as the deploy user (for examp
 1. Clone the repo into its fixed location
    ```
    sudo dnf install -y git
-   sudo mkdir -p /app && sudo chown "$USER:$USER" /app
+   sudo mkdir -p /app && sudo chown "$(id -un):$(id -gn)" /app
    git clone https://github.com/tn-org/edge.git /app/edge
    ```
 2. Prepare the host runtime (docker, the compose plugin, make — a fresh
