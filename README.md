@@ -47,32 +47,29 @@ Log in to the server over SSH or a session manager as the deploy user (for examp
    sudo mkdir -p /app && sudo chown "$(id -un):$(id -gn)" /app
    git clone https://github.com/tn-org/edge.git /app/edge
    ```
-2. Prepare the host runtime (docker, the compose plugin, make — a fresh
-   Amazon Linux 2023 AMI ships none of them)
+2. Run the bootstrap (everything up to a running edge)
+
    ```
    cd /app/edge
    bash scripts/bootstrap-host.sh
    ```
-   Idempotent; run it again freely. Log out and back in once afterwards so the
-   docker group membership takes effect.
-3. Create `.env` and fill it in
-   ```
-   cd /app/edge
-   cp .env.example .env
-   make env
-   ```
-   Set `APP_ENV=production`, `ACME_EMAIL` and `CROWDSEC_BOUNCER_KEY`. Generate the
-   secret with `openssl rand -hex 32`. Leave `EDGE_NETWORK` at its default. There is no
-   key for the ops console: the host writes into `sync/` and the console reads it.
-4. Run the full setup (repeatable and idempotent)
-   ```
-   make setup
-   ```
-   This creates the shared network, renders the config, starts Traefik and CrowdSec, and
-   applies the `/etc` files and systemd timers (log rotation, OS auto-updates, blocking
-   report, disk usage record, host sync). The auto-follow timer (`edge-update`) is
-   installed but deliberately left disabled.
-5. Verify
+
+   It installs the runtime (docker, the compose plugin, make — a fresh Amazon Linux
+   2023 AMI ships none of them), asks for the ACME e-mail and whether this host runs
+   the shared PostgreSQL, fills `.env` (secrets generated with openssl) and runs
+   `make setup`: shared network, rendered config, Traefik + CrowdSec, and the `/etc`
+   files and systemd timers (log rotation, OS auto-updates, blocking report, disk
+   usage record, host sync). The auto-follow timer (`edge-update`) is installed but
+   deliberately left disabled.
+
+   Idempotent — existing `.env` values are never overwritten. Pass
+   `--acme-email <addr>` and `--db`/`--no-db` to skip the prompts, or
+   `--prepare-only` to stop after the runtime install and do `cp .env.example .env`,
+   `make env` and `make setup` by hand. There is no key for the ops console: the
+   host writes into `sync/` and the console reads it. Log out and back in once
+   afterwards so your own shell can use docker.
+
+3. Verify
    ```
    make ps
    docker compose logs traefik | grep -i acme
