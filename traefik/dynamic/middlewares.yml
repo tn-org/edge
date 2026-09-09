@@ -14,9 +14,14 @@ http:
     # files do not expand environment variables, so scripts/render-config.sh writes the key
     # to a file and only its path is given here (the plugin's crowdsecLapiKeyFile option).
     #
-    # forwardedHeadersTrustedIPs is deliberately unset. edge is hit directly from the
-    # internet, so trusting a client-supplied X-Forwarded-For would let anyone walk past
-    # a block.
+    # forwardedHeadersTrustedIPs lists exactly the Cloudflare ranges: behind the
+    # Cloudflare proxy the block must apply to the real client IP from
+    # X-Forwarded-For, not to Cloudflare's edge IPs (banning those would cut off
+    # legitimate traffic wholesale). A client hitting the host directly is never in
+    # these ranges, so its self-supplied X-Forwarded-For stays untrusted and cannot
+    # walk past a block. Source: https://www.cloudflare.com/ips/ — keep in sync with
+    # traefik/traefik.yml (YAML anchors cannot cross files; within this file the
+    # &cloudflare_ips anchor below is the single definition).
     # -------------------------------------------------------------------------
     crowdsec-bouncer:
       plugin:
@@ -32,23 +37,58 @@ http:
           crowdsecLapiScheme: http
           crowdsecLapiHost: crowdsec:8080
           crowdsecLapiKeyFile: /run/secrets/crowdsec-lapi-key
+          forwardedHeadersTrustedIPs: &cloudflare_ips
+            - 173.245.48.0/20
+            - 103.21.244.0/22
+            - 103.22.200.0/22
+            - 103.31.4.0/22
+            - 141.101.64.0/18
+            - 108.162.192.0/18
+            - 190.93.240.0/20
+            - 188.114.96.0/20
+            - 197.234.240.0/22
+            - 198.41.128.0/17
+            - 162.158.0.0/15
+            - 104.16.0.0/13
+            - 104.24.0.0/14
+            - 172.64.0.0/13
+            - 131.0.72.0/22
+            - 2400:cb00::/32
+            - 2606:4700::/32
+            - 2803:f800::/32
+            - 2405:b500::/32
+            - 2405:8100::/32
+            - 2a06:98c0::/29
+            - 2c0f:f248::/32
 
     # -------------------------------------------------------------------------
     # Rate limit. Requests over the limit get a 429. The threshold sits well above
     # measured legitimate use, and the burst allowance passes normal page loads and
     # parallel asset fetches straight through.
+    #
+    # excludedIPs makes the limit count per real client behind the Cloudflare proxy:
+    # Traefik scans X-Forwarded-For right to left and picks the first IP outside these
+    # ranges. Without it every visitor collapses onto a handful of Cloudflare edge IPs
+    # (shared 429s). On hosts hit directly the header is absent and the remote address
+    # is used, as before.
     # -------------------------------------------------------------------------
     ratelimit-default:
       rateLimit:
         average: 30
         period: 1s
         burst: 100
+        sourceCriterion:
+          ipStrategy:
+            excludedIPs: *cloudflare_ips
 
     # Upper bound on requests being processed at once. Overflow gets a 429 (Traefik
-    # default).
+    # default). Same per-client selection as the rate limit above.
     inflight-default:
       inFlightReq:
         amount: 100
+        sourceCriterion:
+          ipStrategy:
+            excludedIPs: *cloudflare_ips
 
     # -------------------------------------------------------------------------
     # Security headers. HSTS is one year without includeSubDomains.
