@@ -9,6 +9,13 @@
 # Dynamic config (routers, middlewares) arrives from two places:
 #   - docker provider: the compose labels of each application; edge declares nothing here
 #   - file provider:   traefik/dynamic/*.yml, the host-wide middlewares and TLS settings
+#
+# Three places in this file are also anchors for the mode filters in render-config.sh: the
+# certResolver under websecure, the certificatesResolvers block, and the
+# "- crowdsec-bouncer@file" entry in the websecure middleware list. EDGE_TLS_MODE=origin-ca
+# and EDGE_CROWDSEC=off remove or replace them on the way out. The render checks its own
+# result, so moving or renaming them stops the render instead of quietly producing a proxy
+# without TLS or without blocking.
 
 global:
   # Do not phone home for a version check on every start.

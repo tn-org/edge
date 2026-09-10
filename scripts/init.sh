@@ -20,6 +20,10 @@ echo "Initialising..."
 [ -f .env ] && { set -a; . ./.env; set +a; }
 EDGE_NETWORK="${EDGE_NETWORK:-edge}"
 
+# EDGE_CROWDSEC decides whether the CrowdSec container is started at all
+. "$SCRIPT_DIR/mode-lib.sh"
+edge_load_modes "$ROOT_DIR" || exit 1
+
 # Create the network. Every application's compose file joins it as external.
 docker network create "$EDGE_NETWORK" 2>/dev/null || true
 echo "Network ready ($EDGE_NETWORK)"
@@ -27,10 +31,21 @@ echo "Network ready ($EDGE_NETWORK)"
 # Substitute .env values into the config files (stops here when something is unset)
 "$SCRIPT_DIR/render-config.sh"
 
-docker compose up -d
-echo "Traefik and CrowdSec started"
+# Unquoted on purpose: edge_compose_up_args expands to nothing unless EDGE_CROWDSEC=off
+docker compose up -d $(edge_compose_up_args)
+if crowdsec_enabled; then
+  echo "Traefik and CrowdSec started"
+else
+  echo "Traefik started (EDGE_CROWDSEC=off, so there is no CrowdSec container)"
+fi
 
 echo ""
 echo "Initialisation complete"
-echo "Certificate status: docker compose logs traefik | grep -i acme"
-echo "CrowdSec health:    docker compose exec crowdsec cscli metrics"
+if [ "$EDGE_TLS_MODE" = "letsencrypt" ]; then
+  echo "Certificate status: docker compose logs traefik | grep -i acme"
+else
+  echo "Certificates:       certs/, listed in traefik/dynamic/generated-tls.yml (origin-ca)"
+fi
+if crowdsec_enabled; then
+  echo "CrowdSec health:    docker compose exec crowdsec cscli metrics"
+fi

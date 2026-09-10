@@ -10,6 +10,12 @@ traefik/dynamic/generated-dashboard.yml
 # ACME certificate store (secret; Traefik creates acme.json with mode 600)
 traefik/acme/
 
+# Certificates placed by hand (EDGE_TLS_MODE=origin-ca). Private keys: never commit them
+certs/
+
+# TLS config rendered from certs/ (EDGE_TLS_MODE=origin-ca)
+traefik/dynamic/generated-tls.yml
+
 # Allowlisted IPs and the CrowdSec whitelist built from them (operational state)
 crowdsec/generated/
 

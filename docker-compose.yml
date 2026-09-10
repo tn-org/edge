@@ -47,19 +47,37 @@ services:
       - ./traefik/generated/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/generated/lapi-key:/run/secrets/crowdsec-lapi-key:ro
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
-      # ACME certificate store. Traefik creates acme.json with mode 600.
+      # Certificates placed by hand, one <name>.pem + <name>.key pair per apex
+      # (EDGE_TLS_MODE=origin-ca). scripts/render-config.sh lists the pairs it finds in
+      # traefik/dynamic/generated-tls.yml. In letsencrypt mode the directory is empty and
+      # nothing refers to /certs, so the mount costs nothing.
+      - ./certs:/certs:ro
+      # ACME certificate store. Traefik creates acme.json with mode 600. Mounted in both
+      # modes: with origin-ca the static config defines no resolver, so nothing opens it,
+      # and keeping the file is what makes switching back a one-line change in .env.
       - ./traefik/acme:/acme
       - ./logs/traefik:/var/log/traefik
     networks: [edge]
     restart: unless-stopped
     logging: *default-logging
     depends_on:
-      - crowdsec
+      crowdsec:
+        condition: service_started
+        # EDGE_CROWDSEC=off starts the stack with the CrowdSec service scaled to zero, so
+        # the dependency has to be optional. The proxy does not need it either way: the
+        # bouncer plugin answers from its local copy of the decisions and lets traffic
+        # through while CrowdSec is down (see traefik/dynamic/middlewares.yml).
+        required: false
 
   # ---------------------------------------------------------------------------
   # Abuse detection. Reads the Traefik JSON access log, creates decisions, and the bouncer
   # plugin inside Traefik queries the LAPI to enforce them.
   # The LAPI publishes no port; it is reachable only from Traefik on the shared network.
+  #
+  # EDGE_CROWDSEC=off in .env keeps this container out: every start path scales it to zero
+  # (scripts/mode-lib.sh) and render-config.sh drops the bouncer from Traefik's default
+  # middlewares. Rate limiting, the concurrency limit and the security headers are Traefik's
+  # own and stay in place. Default is on, which is this service running as it always has.
   # ---------------------------------------------------------------------------
   crowdsec:
     image: crowdsecurity/crowdsec:latest

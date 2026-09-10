@@ -9,9 +9,15 @@
 #   - The CrowdSec LAPI key cannot be written into the dynamic config for the same reason.
 #     It is written to a file for the bouncer plugin's crowdsecLapiKeyFile option.
 #
+# The two host modes in .env (EDGE_TLS_MODE, EDGE_CROWDSEC; see scripts/mode-lib.sh) are
+# applied here as well, by filtering the static config after the substitution above. Both
+# filters are skipped at the defaults, so a host that does not set the keys gets the same
+# file as before they existed.
+#
 # Output (none of it tracked by git):
 #   traefik/generated/traefik.yml     static config
 #   traefik/generated/lapi-key        CrowdSec LAPI key (mode 600)
+#   traefik/dynamic/generated-tls.yml certificates from certs/ (EDGE_TLS_MODE=origin-ca only)
 #   crowdsec/generated/allowlist.tsv  allowlist source of truth (IP<TAB>note), edited by ban.sh
 #   crowdsec/generated/whitelist.yaml the CrowdSec parser whitelist built from it
 #   sync/state, sync/ops                the file channel to the ops console (empty dirs here)
@@ -28,6 +34,8 @@ cd "$ROOT_DIR"
 
 # Layout of the sync/ directory shared with the ops console
 . "$SCRIPT_DIR/sync-lib.sh"
+# EDGE_TLS_MODE / EDGE_CROWDSEC with their defaults and validation
+. "$SCRIPT_DIR/mode-lib.sh"
 
 ALLOW_TSV="crowdsec/generated/allowlist.tsv"
 ALLOW_YAML="crowdsec/generated/whitelist.yaml"
@@ -98,6 +106,9 @@ if [ ! -f .env ]; then
 fi
 set -a; . ./.env; set +a
 
+# Settle the modes before anything is written; an unreadable value stops the run here
+edge_load_modes "$ROOT_DIR" || exit 1
+
 fail=0
 required="ACME_EMAIL CROWDSEC_BOUNCER_KEY"
 # With the db profile enabled the shared PostgreSQL starts on the regular up/update
@@ -130,6 +141,71 @@ if grep -q '__ACME_EMAIL__\|__EDGE_NETWORK__' traefik/generated/traefik.yml.tmp;
   echo "Substitution into the static config failed (ACME_EMAIL / EDGE_NETWORK)" >&2
   exit 1
 fi
+
+# ---- Mode filters over the static config ------------------------------------
+# Neither runs at the defaults (letsencrypt + on), so the file a host gets is unchanged
+# unless it asked for a mode. Both check their own result afterwards: a template edit that
+# moved the lines they look for has to fail here, not turn into a proxy that quietly
+# serves the wrong thing.
+#
+# The checks look at config lines only. The comments in traefik/traefik.yml name the same
+# settings (they explain these filters), and matching one of those would report a failure
+# that is not one.
+static_settings() { grep -v '^[[:space:]]*#' traefik/generated/traefik.yml.tmp; }
+
+if [ "$EDGE_TLS_MODE" = "origin-ca" ]; then
+  # Certificates are placed by hand, so there is no ACME: drop the resolver definition and
+  # the default certResolver on websecure. TLS itself stays enabled on that entrypoint (an
+  # empty tls block), and the certificates come from traefik/dynamic/generated-tls.yml,
+  # rendered from certs/ further down.
+  awk '
+    # The resolver definition: from the top-level key to the blank line that ends the block
+    /^certificatesResolvers:/            { in_acme = 1 }
+    in_acme && /^[[:space:]]*$/          { in_acme = 0 }
+    in_acme                              { next }
+    # The comment belonging to the certResolver line, replaced together with it below
+    /^[[:space:]]*# Default resolver, so applications get a certificate/ { next }
+    /^[[:space:]]*certResolver: letsencrypt$/ {
+      indent = $0; sub(/[^[:space:]].*$/, "", indent)
+      print indent "# No resolver in this mode. The certificates come from"
+      print indent "# traefik/dynamic/generated-tls.yml (rendered from certs/), picked by SNI."
+      print indent "{}"
+      next
+    }
+    { print }
+  ' traefik/generated/traefik.yml.tmp > traefik/generated/traefik.yml.tmp.2
+  mv traefik/generated/traefik.yml.tmp.2 traefik/generated/traefik.yml.tmp
+  # Both halves matter: ACME has to be gone, and the empty tls block has to be there. A
+  # websecure entrypoint left without one would answer 443 in plain HTTP.
+  settings="$(static_settings)"
+  if grep -q 'certResolver\|certificatesResolvers' <<< "$settings" \
+    || ! grep -q '^[[:space:]]*{}$' <<< "$settings"; then
+    rm -f traefik/generated/traefik.yml.tmp
+    echo "Could not filter ACME out of the static config (EDGE_TLS_MODE=origin-ca)" >&2
+    echo "Check the websecure tls block and certificatesResolvers in traefik/traefik.yml" >&2
+    exit 1
+  fi
+fi
+
+if [ "$EDGE_CROWDSEC" = "off" ]; then
+  # The bouncer middleware is the part that talks to the LAPI, so it leaves the default
+  # middleware list together with the container. The other three are Traefik's own and
+  # apply in both modes.
+  awk '/^[[:space:]]*- crowdsec-bouncer@file$/ { next } { print }' \
+    traefik/generated/traefik.yml.tmp > traefik/generated/traefik.yml.tmp.2
+  mv traefik/generated/traefik.yml.tmp.2 traefik/generated/traefik.yml.tmp
+  settings="$(static_settings)"
+  if grep -q 'crowdsec-bouncer@file' <<< "$settings" \
+    || ! grep -q 'security-headers@file' <<< "$settings" \
+    || ! grep -q 'ratelimit-default@file' <<< "$settings" \
+    || ! grep -q 'inflight-default@file' <<< "$settings"; then
+    rm -f traefik/generated/traefik.yml.tmp
+    echo "Default middlewares are not what EDGE_CROWDSEC=off expects (see traefik/traefik.yml)" >&2
+    exit 1
+  fi
+  echo "CrowdSec is off (EDGE_CROWDSEC=off): no bouncer middleware and no container"
+fi
+
 mv traefik/generated/traefik.yml.tmp traefik/generated/traefik.yml
 chmod 644 traefik/generated/traefik.yml
 
@@ -141,19 +217,26 @@ chmod 600 traefik/generated/lapi-key
 umask 022
 
 # ---- Directories ------------------------------------------------------------
+# The ACME store. The directory exists in both modes because compose mounts it either way
+# (docker would create a missing bind mount source as root), and because keeping the file
+# is what makes going back to letsencrypt a one-line change in .env.
+mkdir -p traefik/acme
+chmod 700 traefik/acme
 # Create acme.json up front. Without it Traefik 3.7 fails with
 # "unable to get ACME account: open /acme/acme.json: no such file or directory",
 # drops the resolver from its list and starts without obtaining a single certificate
 # (acme-http@internal then fails with "HTTP challenge is not enabled").
 # An empty file is fine; Traefik treats it as a fresh registration.
-mkdir -p traefik/acme
-chmod 700 traefik/acme
-if [ ! -f traefik/acme/acme.json ]; then
-  umask 077
-  : > traefik/acme/acme.json
-  umask 022
+# Only in letsencrypt mode: with origin-ca there is no resolver in the static config, so
+# nothing opens the store and an empty file would only look like one that failed.
+if [ "$EDGE_TLS_MODE" = "letsencrypt" ]; then
+  if [ ! -f traefik/acme/acme.json ]; then
+    umask 077
+    : > traefik/acme/acme.json
+    umask 022
+  fi
+  chmod 600 traefik/acme/acme.json
 fi
-chmod 600 traefik/acme/acme.json
 mkdir -p logs/traefik
 
 # The file channel to the ops console (scripts/sync-lib.sh). notify.sh and report.sh
@@ -165,8 +248,9 @@ sync_fix_ownership
 
 # ---- Dashboard (optional) ---------------------------------------------------
 # When DASHBOARD_HOST and DASHBOARD_AUTH are set in .env, publish the Traefik
-# dashboard on that FQDN behind basic auth (api@internal, HTTPS via the default
-# resolver). Both empty (the default) means no route exists at all.
+# dashboard on that FQDN behind basic auth (api@internal, and HTTPS from whatever
+# EDGE_TLS_MODE provides, like any other route). Both empty (the default) means no route
+# exists at all.
 # The file lives in the watched dynamic dir but is generated and untracked.
 DASH_FILE="traefik/dynamic/generated-dashboard.yml"
 if [ -n "${DASHBOARD_HOST:-}" ] && [ -n "${DASHBOARD_AUTH:-}" ]; then
@@ -191,6 +275,66 @@ if [ -n "${DASHBOARD_HOST:-}" ] && [ -n "${DASHBOARD_AUTH:-}" ]; then
   echo "Dashboard route enabled (${DASHBOARD_HOST})"
 else
   rm -f "$DASH_FILE"
+fi
+
+# ---- Certificates placed by hand (EDGE_TLS_MODE=origin-ca) ------------------
+# certs/ holds one <name>.pem + <name>.key pair per apex. A Cloudflare Origin CA
+# certificate is issued for "example.com" and "*.example.com" at once and lasts 15 years,
+# so one pair usually covers every application on that apex; a host serving two apexes
+# gets two pairs and Traefik picks between them by SNI.
+# The directory is created in both modes: compose mounts it read-only at /certs, and a
+# missing bind mount source is created by docker as root.
+mkdir -p certs
+chmod 700 certs
+
+TLS_FILE="traefik/dynamic/generated-tls.yml"
+if [ "$EDGE_TLS_MODE" = "origin-ca" ]; then
+  names=()
+  for cert in certs/*.pem; do
+    [ -f "$cert" ] || continue   # no match: the glob stays literal
+    name="$(basename "$cert" .pem)"
+    if [ ! -f "certs/$name.key" ]; then
+      # Half a pair serves nothing, and saying so beats a certificate that silently is
+      # not there
+      echo "certs/$name.pem has no certs/$name.key beside it; skipping it" >&2
+      continue
+    fi
+    names+=("$name")
+  done
+  if [ "${#names[@]}" -eq 0 ]; then
+    echo "EDGE_TLS_MODE=origin-ca but certs/ holds no <name>.pem + <name>.key pair" >&2
+    echo "Issue one in the Cloudflare dashboard (SSL/TLS > Origin Server > Create Certificate)" >&2
+    echo "and save the two halves as certs/<apex>.pem and certs/<apex>.key" >&2
+    exit 1
+  fi
+  {
+    echo "# Generated by scripts/render-config.sh from EDGE_TLS_MODE=origin-ca in .env."
+    echo "# Do not edit directly; it is rebuilt from certs/ by every make render."
+    echo "#"
+    echo "# One entry per <name>.pem + <name>.key pair in certs/, mounted read-only at"
+    echo "# /certs. Traefik picks one per connection by SNI. There is no resolver in this"
+    echo "# mode: the files are placed by hand and a Cloudflare Origin CA certificate lasts"
+    echo "# 15 years, so nothing renews them."
+    echo "tls:"
+    echo "  stores:"
+    echo "    default:"
+    echo "      # Reached only by a connection that matches none of the certificates below."
+    echo "      # sniStrict in traefik/dynamic/tls.yml rejects those handshakes, so this"
+    echo "      # says which certificate the store holds rather than what clients get."
+    echo "      defaultCertificate:"
+    echo "        certFile: /certs/${names[0]}.pem"
+    echo "        keyFile: /certs/${names[0]}.key"
+    echo "  certificates:"
+    for name in "${names[@]}"; do
+      echo "    - certFile: /certs/$name.pem"
+      echo "      keyFile: /certs/$name.key"
+    done
+  } > "$TLS_FILE.tmp"
+  mv "$TLS_FILE.tmp" "$TLS_FILE"
+  chmod 644 "$TLS_FILE"
+  echo "TLS: Cloudflare Origin CA, ${#names[@]} certificate(s) from certs/ (no ACME)"
+else
+  rm -f "$TLS_FILE"
 fi
 
 render_allowlist

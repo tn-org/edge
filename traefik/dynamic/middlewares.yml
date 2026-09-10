@@ -4,6 +4,10 @@
 # router. Middlewares added by an application's labels run after them. An application that
 # needs different values defines its own middleware under a different name and references
 # that.
+#
+# With EDGE_CROWDSEC=off the crowdsec-bouncer definition below stays in the file but is
+# referenced by nothing: render-config.sh drops it from that default list, so it is never
+# built and never asks for a LAPI that is not running. The other three apply in both modes.
 
 http:
   middlewares:

@@ -12,7 +12,8 @@
 #   report.sh bans-sync   # write blocking state and run the queued IP operations (no notification)
 #   report.sh timers      # write systemd timer state and run the queued operations (no notification)
 #   report.sh reboot-sync # write reboot state and apply the scheduled reboots (no notification)
-#   report.sh host-sync   # run bans-sync, timers and reboot-sync together (called by host-sync.timer)
+#   report.sh host-info   # write the facts about this host the console cannot derive itself
+#   report.sh host-sync   # run bans-sync, timers, reboot-sync and host-info together (host-sync.timer)
 #   report.sh reboot-check # detect a pending reboot after a kernel update and warn daily while it lasts
 
 set -uo pipefail
@@ -20,6 +21,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 . "$SCRIPT_DIR/sync-lib.sh"
+# EDGE_TLS_MODE decides where the certificates are read from, EDGE_CROWDSEC whether there
+# is any blocking on this host at all
+. "$SCRIPT_DIR/mode-lib.sh"
+edge_load_modes "$ROOT_DIR" || exit 1
 
 # The CrowdSec CLI only exists inside the container, so go through compose.
 # Empty or non-JSON output must not crash the caller; callers check the result themselves.
@@ -48,6 +53,44 @@ case "${1:-}" in
     # days left per domain (visible as the timer's last output in the console), and
     # send a warning when any certificate has under 14 days left — by then the
     # automatic renewal has been failing for over two weeks.
+    #
+    # With EDGE_TLS_MODE=origin-ca there is no ACME store: the certificates are the files
+    # in certs/, placed by hand and valid for 15 years. Nothing can fail to renew, but an
+    # expiry date nobody ever looks at is exactly how those 15 years end in an outage, so
+    # the same report is produced from the files. The same line also catches a mode switch
+    # that left the wrong file behind.
+    if [ "$EDGE_TLS_MODE" = "origin-ca" ]; then
+      BODY_FILE="$(mktemp)"
+      trap 'rm -f "$BODY_FILE"' EXIT
+      warn=0
+      for cert in "$ROOT_DIR"/certs/*.pem; do
+        [ -f "$cert" ] || continue   # no match: the glob stays literal
+        name="$(basename "$cert" .pem)"
+        end="$(openssl x509 -noout -enddate -in "$cert" 2>/dev/null | sed -n 's/^notAfter=//p')"
+        end_epoch=""
+        [ -n "$end" ] && end_epoch="$(date -u -d "$end" +%s 2>/dev/null || true)"
+        if [ -z "$end_epoch" ]; then
+          echo "$name: unreadable certificate" >> "$BODY_FILE"
+          warn=1
+          continue
+        fi
+        days=$(( (end_epoch - $(date -u +%s)) / 86400 ))
+        printf '%s: %d days left (expires %s)\n' \
+          "$name" "$days" "$(date -u -d "@$end_epoch" +%Y-%m-%d)" >> "$BODY_FILE"
+        [ "$days" -lt 14 ] && warn=1
+      done
+      if [ ! -s "$BODY_FILE" ]; then
+        echo "No certificate in certs/ (with origin-ca that means nothing is served over HTTPS)" >> "$BODY_FILE"
+        warn=1
+      fi
+      cat "$BODY_FILE"
+      status=0
+      if [ "$warn" -eq 1 ]; then
+        "$SCRIPT_DIR/notify.sh" --warn "Certificate problem in certs/" < "$BODY_FILE" || status=1
+      fi
+      exit "$status"
+    fi
+
     ACME_FILE="$ROOT_DIR/traefik/acme/acme.json"
     if ! sudo test -s "$ACME_FILE"; then
       echo "No ACME store yet ($ACME_FILE); nothing to report"
@@ -112,6 +155,13 @@ PY
   bans)
     # --no-notify records nothing for the console (display only, used by make bans)
     [ "${2:-}" = "--no-notify" ] && NOTIFY_DISABLE=1
+
+    # Nothing blocks on this host, so there is nothing to report. Say that instead of
+    # sending a daily "0 blocks" that reads like a quiet day behind a working guard.
+    if ! crowdsec_enabled; then
+      echo "CrowdSec is off on this host (EDGE_CROWDSEC=off): nothing blocks, nothing to report"
+      exit 0
+    fi
 
     # "New" counts alerts (detected events) over the last 24 hours.
     # Alerts carry a timestamp, so an exact count needs no state of its own.
@@ -243,6 +293,27 @@ PY
     # The JSON shape is a stable contract with the console. It dates from a fail2ban-era
     # implementation: what used to be a "jail" is a CrowdSec scenario name
     # such as crowdsecurity/http-probing.
+    #
+    # With EDGE_CROWDSEC=off nothing blocks here, so no snapshot is published at all and
+    # the previous one is removed: a host with no blocking state looks exactly like a host
+    # that has never run CrowdSec, rather than showing a stale list or an empty one that
+    # reads as "protected, nothing caught". Requests the console has already queued are
+    # answered with an error, so they do not sit in sync/ops for ever.
+    if ! crowdsec_enabled; then
+      OFF_REQ_FILE="$(mktemp)"
+      trap 'rm -f "$OFF_REQ_FILE"' EXIT
+      sync_prepare
+      rm -f "$SYNC_STATE_DIR/bans.json"
+      sync_pending_ops ban ip note > "$OFF_REQ_FILE"
+      while IFS=$'\t' read -r id action ip note; do
+        [ -n "$id" ] || continue
+        sync_write_op_result "$id" "CrowdSec is off on this host (EDGE_CROWDSEC=off)"
+        echo "rejected: $action $ip (CrowdSec is off on this host)" >&2
+      done < "$OFF_REQ_FILE"
+      echo "CrowdSec is off on this host (EDGE_CROWDSEC=off): no blocking state published"
+      exit 0
+    fi
+
     DEC_FILE="$(mktemp)"; REQ_FILE="$(mktemp)"; ALLOW_FILE="$(mktemp)"; ALL_FILE="$(mktemp)"
     trap 'rm -f "$DEC_FILE" "$REQ_FILE" "$ALLOW_FILE" "$ALL_FILE"' EXIT
 
@@ -679,6 +750,63 @@ PY
       sync_commit_state reboot.json
     fi
     ;;
+  host-info)
+    # Facts about the host itself that the console cannot work out from its own side.
+    # Currently one: the FQDN the Traefik dashboard is published on, which lives in
+    # DASHBOARD_HOST in .env and is empty on a host with no dashboard route.
+    #
+    # Written like every other snapshot: the whole file through a .tmp and a rename, so a
+    # reader never sees half of one. Unchanged content is left alone instead of rewritten
+    # with a new timestamp — the console skips a file whose generatedAt it has already
+    # taken in, and rewriting it every five minutes would defeat that.
+    #
+    # Only the one key is read out of .env (same as scripts/mode-lib.sh): this runs as root
+    # from a timer and has no business holding the LAPI key or the dashboard password.
+    sync_prepare
+    dashboard_host="$(sed -n 's/^DASHBOARD_HOST=//p' "$ROOT_DIR/.env" 2>/dev/null \
+      | head -1 | tr -d "\"' ")"
+
+    python3 - "$SYNC_STATE_DIR/host.json.tmp" "$SYNC_STATE_DIR/host.json" "$dashboard_host" <<'PY'
+import datetime, json, sys
+
+dest, current, raw = sys.argv[1:4]
+
+# The contract is a bare host name: no scheme, no port, no path. .env is meant to hold
+# exactly that, so this only trims what a hand-edited value may have picked up.
+host = raw.strip()
+if "//" in host:
+    host = host.split("//", 1)[1]
+host = host.split("/", 1)[0]
+host = host.split(":", 1)[0]
+dashboard = {"host": host} if host else None
+
+# Same shape as before means nothing to publish: keep the file, and with it its
+# generatedAt, exactly as it is.
+try:
+    with open(current, encoding="utf-8") as f:
+        existing = json.load(f)
+except (OSError, ValueError):
+    existing = None
+if isinstance(existing, dict) and existing.get("dashboard") == dashboard:
+    print("Host facts unchanged")
+    raise SystemExit(3)
+
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump({
+        "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "dashboard": dashboard,
+    }, f)
+
+print(f"Wrote host facts (dashboard: {host or 'none'})")
+PY
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      sync_commit_state host.json
+    elif [ "$rc" -ne 3 ]; then
+      echo "Could not write the host facts" >&2
+      exit 1
+    fi
+    ;;
   host-sync)
     # The periodic pass over the file channel: refresh every state snapshot and run
     # whatever the console has queued. If one part fails, the rest still run.
@@ -686,6 +814,7 @@ PY
     "$0" bans-sync || rc=1
     "$0" timers || rc=1
     "$0" reboot-sync || rc=1
+    "$0" host-info || rc=1
     # Events are the only thing that accumulates. Nothing else prunes them on a host with
     # no console, so drop them here after two weeks.
     sync_prune_events 14
@@ -721,7 +850,7 @@ PY
       | "$SCRIPT_DIR/notify.sh" --warn "Reboot pending: kernel or similar updates are not active yet (${days} days)"
     ;;
   *)
-    echo "usage: report.sh {os|bans|disk-usage|bans-sync|timers|reboot-sync|host-sync|reboot-check}" >&2
+    echo "usage: report.sh {os|bans|disk-usage|bans-sync|timers|reboot-sync|host-info|host-sync|reboot-check}" >&2
     exit 2
     ;;
 esac

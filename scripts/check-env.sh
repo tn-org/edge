@@ -40,7 +40,8 @@ fi
 app_env=$(val APP_ENV "$ENV" | tr -d "\"'")
 if [ -n "$app_env" ] && [ "$app_env" != "local" ]; then
   # Keys where the shared default is the right answer, so leaving them alone is correct
-  shared_defaults="APP_ENV EDGE_NETWORK"
+  # (the two mode keys default to what every host did before they existed)
+  shared_defaults="APP_ENV EDGE_NETWORK EDGE_TLS_MODE EDGE_CROWDSEC"
 
   unchanged=""
   for k in $(comm -12 <(keys "$EXAMPLE") <(keys "$ENV")); do

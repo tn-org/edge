@@ -24,6 +24,17 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 source "$SCRIPT_DIR/choose.sh"
+. "$SCRIPT_DIR/mode-lib.sh"
+
+# Every operation here goes through the CrowdSec LAPI or the parser whitelist, and with
+# EDGE_CROWDSEC=off neither exists. Stop with the reason rather than let cscli fail against
+# a container that is not running.
+edge_load_modes "$ROOT_DIR" || exit 1
+if ! crowdsec_enabled; then
+  echo "CrowdSec is off on this host (EDGE_CROWDSEC=off): nothing blocks, so there is nothing to operate" >&2
+  echo "Set EDGE_CROWDSEC=on in .env and run make up to bring blocking back" >&2
+  exit 1
+fi
 
 ALLOW_TSV="$ROOT_DIR/crowdsec/generated/allowlist.tsv"
 # Duration of a manual block. CrowdSec's own scenarios use four hours to a day, so this

@@ -156,7 +156,8 @@ sync/
  │  ├ bans.json                  blocking state snapshot
  │  ├ timers.json                scheduled job state snapshot
  │  ├ reboot.json                pending-reboot state snapshot
- │  └ disk-usage.json            usage per directory (daily)
+ │  ├ disk-usage.json            usage per directory (daily)
+ │  └ host.json                  facts about the host itself (the dashboard FQDN)
  └ ops/                      the console writes req-<id>.json, the host answers res-<id>.json
 ```
 
@@ -172,15 +173,17 @@ are written either way and simply go unread.
 
 ## `.env` keys
 
-| Key                    | Default | Description                                                                                           |
-| ---------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
-| `APP_ENV`              | `local` | `local` = workstation, anything else = server. Controls sudo and the server-only guard                |
-| `EDGE_NETWORK`         | `edge`  | Name of the one shared docker network; edge and every application join it as external                 |
-| `ACME_EMAIL`           | —       | Registration address for Let's Encrypt (where expiry notices go)                                      |
-| `CROWDSEC_BOUNCER_KEY` | —       | Shared secret between the Traefik bouncer and the CrowdSec LAPI; compose refuses to start without it  |
-| `COMPOSE_PROFILES`     | —       | Optional services to include in `up`/`update`; `db` adds the shared PostgreSQL instance               |
-| `POSTGRES_PASSWORD`    | —       | Superuser password of the shared PostgreSQL instance; read only when the db service starts            |
-| `POSTGRES_PORT`        | `5432`  | Host-side loopback port of the shared PostgreSQL instance; containers always use `edge-postgres:5432` |
+| Key                    | Default       | Description                                                                                           |
+| ---------------------- | ------------- | ----------------------------------------------------------------------------------------------------- |
+| `APP_ENV`              | `local`       | `local` = workstation, anything else = server. Controls sudo and the server-only guard                |
+| `EDGE_NETWORK`         | `edge`        | Name of the one shared docker network; edge and every application join it as external                 |
+| `EDGE_TLS_MODE`        | `letsencrypt` | `letsencrypt` = Traefik's ACME resolver; `origin-ca` = certificates placed by hand in `certs/`        |
+| `ACME_EMAIL`           | —             | Registration address for Let's Encrypt (where expiry notices go)                                      |
+| `EDGE_CROWDSEC`        | `on`          | `off` runs the stack without the CrowdSec container and without the bouncer middleware                |
+| `CROWDSEC_BOUNCER_KEY` | —             | Shared secret between the Traefik bouncer and the CrowdSec LAPI; compose refuses to start without it  |
+| `COMPOSE_PROFILES`     | —             | Optional services to include in `up`/`update`; `db` adds the shared PostgreSQL instance               |
+| `POSTGRES_PASSWORD`    | —             | Superuser password of the shared PostgreSQL instance; read only when the db service starts            |
+| `POSTGRES_PORT`        | `5432`        | Host-side loopback port of the shared PostgreSQL instance; containers always use `edge-postgres:5432` |
 
 Generate `CROWDSEC_BOUNCER_KEY` with `openssl rand -hex 32`. `.env` is not tracked by git
 and exists only on the server. Compare it against the example with `make env CMD=check`.
@@ -209,6 +212,48 @@ only needed while the role does not exist yet. The application connects with
 host — the port is published on loopback only). Data lives in the `pgdata` named
 volume.
 
+## Hosts behind the Cloudflare proxy (optional modes)
+
+Two keys in `.env` change what the stack is made of. Both default to what every host did
+before they existed, so a `.env` that does not mention them is unaffected, and both are
+reversible by putting the key back.
+
+### `EDGE_TLS_MODE=origin-ca` — certificates placed by hand
+
+For a host that is only reachable through the Cloudflare proxy. Traefik obtains nothing:
+it serves the certificate files in `certs/`, which Cloudflare issues for 15 years.
+
+1. In the Cloudflare dashboard, SSL/TLS > Origin Server > Create Certificate. One
+   certificate covers `example.com` and `*.example.com`.
+2. Save the two halves on the host as `certs/<apex>.pem` and `certs/<apex>.key`
+   (the directory is created by `make render` and is not tracked by git).
+3. Set `EDGE_TLS_MODE=origin-ca` in `.env` and run `make up`.
+
+`scripts/render-config.sh` writes every pair it finds into
+`traefik/dynamic/generated-tls.yml` and leaves ACME out of the static config; Traefik picks
+a certificate per connection by SNI, so several apexes can share one host. Port 80 and the
+redirect to HTTPS stay exactly as they are in either mode. The daily certificate report
+reads `certs/` instead of the ACME store and warns the same way. Going back is
+`EDGE_TLS_MODE=letsencrypt` plus `make up`: the ACME store is never deleted.
+
+### `EDGE_CROWDSEC=off` — no abuse detection on this host
+
+Runs the stack without the CrowdSec container, and without the bouncer in the default
+middleware list. The rate limit, the concurrency limit and the security headers are
+Traefik's own and stay in place. The blocking report timer is not installed, `make ban`
+stops with the reason, and no blocking state is published to the ops console, so no screen
+shows a guard that is not running.
+
+```
+make env KEY=EDGE_CROWDSEC VALUE=off
+make up          # removes the CrowdSec container
+make host-apply  # removes the blocking report timer
+```
+
+Being behind Cloudflare is not on its own a reason to turn it off: requests forwarded by
+the proxy arrive with the real client IP (Traefik trusts `X-Forwarded-For` only from
+Cloudflare's ranges), and a free Cloudflare plan blocks nothing by itself.
+
 ## Traefik dashboard (optional)
 
 Set both keys in `.env` and run `make render` (or `make update`):
@@ -219,7 +264,8 @@ DASHBOARD_AUTH=admin:$apr1$...      # openssl passwd -apr1 'your-password'
 ```
 
 Point a DNS record for that FQDN at this host. The dashboard is then served over HTTPS
-(certificate via ACME like any other route) behind basic auth. With the keys empty
+(its certificate comes from whatever `EDGE_TLS_MODE` provides, like any other route)
+behind basic auth. With the keys empty
 (the default) no route exists and the dashboard is unreachable. It is read-only: it
 shows routers, services and middlewares, and cannot change anything.
 

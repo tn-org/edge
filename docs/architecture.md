@@ -47,8 +47,11 @@ The host layer does not call the ops console at all. The contract is one directo
 
 - `sync/state/` is written by `scripts/notify.sh` and `scripts/report.sh` and read by the
   console. `events/YYYY-MM-DD.ndjson` gets one JSON object per notification, appended;
-  `bans.json`, `timers.json`, `reboot.json` and `disk-usage.json` are full snapshots,
-  rewritten through a `.tmp` file so a reader never sees half of one. The JSON shape dates
+  `bans.json`, `timers.json`, `reboot.json`, `disk-usage.json` and `host.json` are full
+  snapshots, rewritten through a `.tmp` file so a reader never sees half of one.
+  `host.json` carries the facts the console cannot derive on its own (currently the
+  dashboard FQDN) and is only rewritten when its content changed, so the console can skip
+  a `generatedAt` it has already taken in. The JSON shape dates
   from a fail2ban-era implementation and did not change: what used to be a fail2ban "jail"
   is a CrowdSec scenario name.
 - `sync/ops/` is the other direction. The console writes `req-<id>.json`
@@ -74,6 +77,27 @@ inside the file. `scripts/render-config.sh` substitutes the `.env` values (`ACME
 and `crowdsec/generated/`, both untracked. `make up` and `deploy-host.sh` run it
 automatically; call `make render` by hand only when you want a value change applied
 immediately.
+
+## The two host modes
+
+`EDGE_TLS_MODE` (`letsencrypt` or `origin-ca`) and `EDGE_CROWDSEC` (`on` or `off`) select
+what the stack is made of. Their defaults are what the host did before the keys existed,
+and the scripts that care about them read them through `scripts/mode-lib.sh`, which is also
+where the defaults and the accepted values are defined once.
+
+- `origin-ca` means the certificates are the files in `certs/` (Cloudflare Origin CA, 15
+  years, placed by hand). `render-config.sh` lists them in
+  `traefik/dynamic/generated-tls.yml` and filters ACME out of the static config. Port 80
+  and the redirect to HTTPS are unchanged, so the only difference is where a certificate
+  comes from. The ACME store is left in place, which is what makes going back one key.
+- `off` means no CrowdSec container and no bouncer in the entrypoint's default middlewares.
+  Rate limiting, the concurrency limit and the security headers are Traefik's own and are
+  unaffected. The blocking report timer is not installed and `bans.json` is not published,
+  so nothing reports a guard that is not running.
+
+Both filters run over the already substituted static config and check their own result, so
+a template edit that moves the lines they look for fails the render instead of producing a
+proxy that serves the wrong thing.
 
 ## Updates (this repo does not push itself)
 

@@ -10,8 +10,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+. "$SCRIPT_DIR/mode-lib.sh"
 
 cd "$ROOT_DIR"
+
+edge_load_modes "$ROOT_DIR" || exit 1
 
 # ---- Remove units from earlier versions ------------------------------------
 # Left in place, they keep creating blocks of their own alongside CrowdSec, and the two
@@ -30,6 +33,24 @@ for unit in report-fail2ban.timer cert-renew.timer ipset-persist.service; do
   fi
 done
 sudo rm -f /etc/systemd/system/report-fail2ban.service /etc/systemd/system/cert-renew.service
+
+# ---- Nothing to set up when there is no blocking ----------------------------
+# Say so in one line instead of installing a timer whose daily run has nothing to report.
+# A timer left over from the previous mode is removed, so the console's task list shows
+# what the host actually runs.
+if ! crowdsec_enabled; then
+  echo ""
+  echo "CrowdSec is off on this host (EDGE_CROWDSEC=off): the blocking report timer is not installed"
+  if systemctl list-unit-files --no-legend report-bans.timer 2>/dev/null | grep -q report-bans; then
+    echo "Removing the report-bans timer left from the previous mode..."
+    sudo systemctl disable --now report-bans.timer 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/report-bans.timer /etc/systemd/system/report-bans.service
+    sudo systemctl daemon-reload
+  fi
+  echo ""
+  echo "Blocking setup skipped (set EDGE_CROWDSEC=on in .env to bring it back)"
+  exit 0
+fi
 
 # ---- Daily report timer -----------------------------------------------------
 echo ""

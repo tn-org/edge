@@ -30,6 +30,11 @@ timer-driven run never hangs.
   one destination; there are no per-domain log files.
 - `render` writes `traefik/generated/` (static config, LAPI key) and
   `crowdsec/generated/` (allowlist). None of it is tracked by git.
+- `render` also applies the two mode keys: with `EDGE_TLS_MODE=origin-ca` it lists the
+  certificates in `certs/` in `traefik/dynamic/generated-tls.yml` and leaves ACME out of
+  the static config, and with `EDGE_CROWDSEC=off` it drops the bouncer from the default
+  middlewares (`up` then starts without that container). Both default to the previous
+  behaviour; see "Hosts behind the Cloudflare proxy" in `README.md`.
 - No reload command is needed to apply config. Routing follows docker events and
   `traefik/dynamic/` is watched for file changes.
 
@@ -90,8 +95,8 @@ installed by `make host-apply`; enable it once per host with
 | `make setup` | Full first-run wizard (repeatable, idempotent)          | —                                                  | both    | manual (on a server it initialises the host) |
 
 Three keys need a value on a fresh host: `APP_ENV`, `ACME_EMAIL` and
-`CROWDSEC_BOUNCER_KEY`. `EDGE_NETWORK` can stay at its default (the full key list is in
-`README.md`).
+`CROWDSEC_BOUNCER_KEY`. `EDGE_NETWORK`, `EDGE_TLS_MODE` and `EDGE_CROWDSEC` can stay at
+their defaults (the full key list is in `README.md`).
 
 - `CROWDSEC_BOUNCER_KEY` is the shared secret between the Traefik bouncer and CrowdSec.
   Generate it with `openssl rand -hex 32` and put it in `.env`; compose then registers it
@@ -124,6 +129,10 @@ since the interval column already says so.
 `edge-update` is the only one disabled by default. It runs only on hosts where somebody
 ran `sudo systemctl enable --now edge-update.timer`. There is no mechanism that deploys to
 this host from the outside, and this repo contains no CI workflows.
+
+On a host with `EDGE_CROWDSEC=off` the blocking record is not in the list at all:
+`make host-apply` does not install `report-bans.timer` and removes it if a previous mode
+left one behind.
 
 Certificate renewal and persisting the block list are not on the list because they no
 longer need a timer: Traefik's ACME resolver renews certificates before they expire, and

@@ -71,4 +71,9 @@ echo "Verifying..."
 make --no-print-directory ps
 echo ""
 echo "Setup complete"
-echo "Traefik's ACME resolver obtains certificates on its own: docker compose logs traefik | grep -i acme"
+. "$SCRIPT_DIR/mode-lib.sh"
+if edge_load_modes "$ROOT_DIR" && [ "$EDGE_TLS_MODE" = "origin-ca" ]; then
+  echo "Certificates come from certs/ (EDGE_TLS_MODE=origin-ca); traefik/dynamic/generated-tls.yml lists them"
+else
+  echo "Traefik's ACME resolver obtains certificates on its own: docker compose logs traefik | grep -i acme"
+fi
