@@ -38,7 +38,7 @@ GUARD_SERVER = @if [ "$(APP_ENV)" = "local" ]; then echo "make $@ is server-only
 .DEFAULT_GOAL := help
 
 .PHONY: help up down restart ps logs render \
-	update bans host-apply ban docker-prune env setup \
+	update verify bans host-apply ban docker-prune env setup \
 	db-up db-down db-create
 
 help: # (prints the command list; hidden from the list itself)
@@ -106,11 +106,15 @@ db-create: ## Create a database and its owner role, NAME= [ROLE= PASSWORD=] (ide
 update: GUIDE = Run on the server: cd /app/edge && make update
 update: ## Follow origin and apply the host layer (default main; override with DEPLOY_BRANCH=) [server]
 	$(GUARD_SERVER)
-	git fetch --all --prune
-	git reset --hard origin/$(DEPLOY_BRANCH)
-	$(SCRIPTS)/deploy-host.sh
+	prev=$$(git rev-parse HEAD); \
+	git fetch --all --prune; \
+	git reset --hard origin/$(DEPLOY_BRANCH); \
+	EDGE_UPDATE_PREV=$$prev $(SCRIPTS)/deploy-host.sh
 
 ##@ Monitoring and maintenance
+
+verify: ## Check that every Traefik-labelled hostname answers TLS on 443 (used by update; manual any time) [server]
+	@$(SCRIPTS)/verify-routes.sh
 
 bans: GUIDE = Run on the server: cd <repo> && make bans (CrowdSec only runs on the server)
 bans: ## Show blocking status (display only, no notification) [server]

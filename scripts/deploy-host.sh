@@ -54,4 +54,34 @@ else
   echo "Static config unchanged (no recreate)"
 fi
 
+# ---- Verify, and roll back a bad update -------------------------------------
+# Applying is not the goal; serving is. Prove every labelled hostname still answers
+# TLS (scripts/verify-routes.sh). If it does not:
+#   - make update passes the commit it started from in EDGE_UPDATE_PREV. Reset back
+#     to it and re-apply once (the old script version, EDGE_UPDATE_ROLLED_BACK guards
+#     the recursion). A break caused by the new commit heals; a break caused by host
+#     state (.env, certs/) stays, which the second verify then reports.
+#   - Either way exit non-zero: the systemd unit fails and OnFailure= raises an error
+#     notice through the file channel (mailed by the ops console).
+if ! ./scripts/verify-routes.sh; then
+  prev="${EDGE_UPDATE_PREV:-}"
+  if [ -n "$prev" ] && [ -z "${EDGE_UPDATE_ROLLED_BACK:-}" ] \
+    && [ "$prev" != "$(git rev-parse HEAD)" ]; then
+    echo "Routing broken after update; rolling back to $prev" >&2
+    ./scripts/notify.sh --error "edge update broke routing; rolled back to $prev" <<EOF
+verify-routes failed after applying $(git rev-parse HEAD).
+Rolled back to $prev and re-applied. If the second verify also failed, the cause
+is host state (.env, certs/), not the update; see the unit log.
+EOF
+    git reset --hard "$prev"
+    EDGE_UPDATE_ROLLED_BACK=1 ./scripts/deploy-host.sh || true
+  else
+    ./scripts/notify.sh --error "edge routing verification failed" <<EOF
+verify-routes failed on $(git rev-parse HEAD) with no rollback target
+(manual run, or already rolled back). See the unit log on the host.
+EOF
+  fi
+  exit 1
+fi
+
 echo "Host layer applied"

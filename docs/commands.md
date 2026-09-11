@@ -58,6 +58,7 @@ timer-driven run never hangs.
 | Command       | Purpose                                                | Arguments          | Runs on | Called by                            |
 | ------------- | ------------------------------------------------------ | ------------------ | ------- | ------------------------------------ |
 | `make update` | Follow origin and apply the host layer (git + compose) | `[DEPLOY_BRANCH=]` | server  | manual, edge-update.timer (optional) |
+| `make verify` | Check every Traefik-labelled hostname answers TLS      | —                  | server  | manual, deploy-host.sh               |
 
 This repo has no mechanism to push itself onto a host. Updates happen on the host with
 `make update` (`git fetch --all --prune`, `git reset --hard origin/$DEPLOY_BRANCH`, then
@@ -65,6 +66,14 @@ This repo has no mechanism to push itself onto a host. Updates happen on the hos
 the config and runs `compose up -d --remove-orphans`, recreating containers only when the
 static config (`traefik/traefik.yml`, `crowdsec/`) changed. Changes under `/etc` and to
 systemd units are not included; run `make host-apply` by hand for those.
+
+After applying, `deploy-host.sh` runs `scripts/verify-routes.sh`: a real TLS handshake
+against 127.0.0.1:443 for every `Host(...)` found in the Traefik labels of running
+containers (plus `DASHBOARD_HOST`). If any hostname stays unanswered, the update is a
+failure: `make update` resets back to the commit it started from and re-applies once,
+the unit exits non-zero, and `OnFailure=` raises an error notice through the file
+channel (mailed by the ops console). A failure that survives the rollback is host
+state (`.env`, `certs/`), not the commit.
 
 Automatic following is `edge-update.timer` (daily at 05:00 Asia/Tokyo). The unit is only
 installed by `make host-apply`; enable it once per host with
