@@ -9,10 +9,10 @@
 #   - The CrowdSec LAPI key cannot be written into the dynamic config for the same reason.
 #     It is written to a file for the bouncer plugin's crowdsecLapiKeyFile option.
 #
-# The two host modes in .env (EDGE_TLS_MODE, EDGE_CROWDSEC; see scripts/mode-lib.sh) are
-# applied here as well, by filtering the static config after the substitution above. Both
-# filters are skipped at the defaults, so a host that does not set the keys gets the same
-# file as before they existed.
+# The host mode in .env (EDGE_TLS_MODE; see scripts/mode-lib.sh) is applied here as
+# well, by filtering the static config after the substitution above. Both filters are
+# skipped at the default (letsencrypt), so a host that does not set the key gets the
+# same file as before it existed.
 #
 # Output (none of it tracked by git):
 #   traefik/generated/traefik.yml     static config
@@ -34,7 +34,7 @@ cd "$ROOT_DIR"
 
 # Layout of the sync/ directory shared with the ops console
 . "$SCRIPT_DIR/sync-lib.sh"
-# EDGE_TLS_MODE / EDGE_CROWDSEC with their defaults and validation
+# EDGE_TLS_MODE with its default and validation (CrowdSec presence derives from it)
 . "$SCRIPT_DIR/mode-lib.sh"
 
 ALLOW_TSV="crowdsec/generated/allowlist.tsv"
@@ -187,7 +187,7 @@ if [ "$EDGE_TLS_MODE" = "origin-ca" ]; then
   fi
 fi
 
-if [ "$EDGE_CROWDSEC" = "off" ]; then
+if ! crowdsec_enabled; then
   # The bouncer middleware is the part that talks to the LAPI, so it leaves the default
   # middleware list together with the container. The other three are Traefik's own and
   # apply in both modes.
@@ -200,10 +200,10 @@ if [ "$EDGE_CROWDSEC" = "off" ]; then
     || ! grep -q 'ratelimit-default@file' <<< "$settings" \
     || ! grep -q 'inflight-default@file' <<< "$settings"; then
     rm -f traefik/generated/traefik.yml.tmp
-    echo "Default middlewares are not what EDGE_CROWDSEC=off expects (see traefik/traefik.yml)" >&2
+    echo "Default middlewares are not what the origin-ca mode expects (see traefik/traefik.yml)" >&2
     exit 1
   fi
-  echo "CrowdSec is off (EDGE_CROWDSEC=off): no bouncer middleware and no container"
+  echo "CrowdSec retires behind Cloudflare (origin-ca): no bouncer middleware and no container"
 fi
 
 mv traefik/generated/traefik.yml.tmp traefik/generated/traefik.yml

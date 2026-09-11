@@ -179,7 +179,6 @@ are written either way and simply go unread.
 | `EDGE_NETWORK`         | `edge`        | Name of the one shared docker network; edge and every application join it as external                 |
 | `EDGE_TLS_MODE`        | `letsencrypt` | `letsencrypt` = Traefik's ACME resolver; `origin-ca` = certificates placed by hand in `certs/`        |
 | `ACME_EMAIL`           | —             | Registration address for Let's Encrypt (where expiry notices go)                                      |
-| `EDGE_CROWDSEC`        | `on`          | `off` runs the stack without the CrowdSec container and without the bouncer middleware                |
 | `CROWDSEC_BOUNCER_KEY` | —             | Shared secret between the Traefik bouncer and the CrowdSec LAPI; compose refuses to start without it  |
 | `COMPOSE_PROFILES`     | —             | Optional services to include in `up`/`update`; `db` adds the shared PostgreSQL instance               |
 | `POSTGRES_PASSWORD`    | —             | Superuser password of the shared PostgreSQL instance; read only when the db service starts            |
@@ -236,23 +235,17 @@ redirect to HTTPS stay exactly as they are in either mode. The daily certificate
 reads `certs/` instead of the ACME store and warns the same way. Going back is
 `EDGE_TLS_MODE=letsencrypt` plus `make up`: the ACME store is never deleted.
 
-### `EDGE_CROWDSEC=off` — no abuse detection on this host
+### Behind Cloudflare there is no abuse detection on this host
 
-Runs the stack without the CrowdSec container, and without the bouncer in the default
-middleware list. The rate limit, the concurrency limit and the security headers are
-Traefik's own and stay in place. The blocking report timer is not installed, `make ban`
-stops with the reason, and no blocking state is published to the ops console, so no screen
-shows a guard that is not running.
-
-```
-make env KEY=EDGE_CROWDSEC VALUE=off
-make up          # removes the CrowdSec container
-make host-apply  # removes the blocking report timer
-```
-
-Being behind Cloudflare is not on its own a reason to turn it off: requests forwarded by
-the proxy arrive with the real client IP (Traefik trusts `X-Forwarded-For` only from
-Cloudflare's ranges), and a free Cloudflare plan blocks nothing by itself.
+CrowdSec has no switch of its own: it follows `EDGE_TLS_MODE`. With `letsencrypt` it
+runs as it always has. With `origin-ca` it retires — the host sits behind the Cloudflare
+proxy with its security group admitting only Cloudflare, so edge-level IP banning is
+redundant and stops together with the switch, with no separate step: no container, no
+bouncer in the default middleware list, no blocking report timer, `make ban` stops with
+the reason, and no blocking state is published to the ops console, so no screen shows a
+guard that is not running. The rate limit, the concurrency limit and the security
+headers are Traefik's own and stay in place in both modes; blocking a client on an
+origin-ca host is done at Cloudflare.
 
 ## Traefik dashboard (optional)
 

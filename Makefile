@@ -15,14 +15,15 @@ DOCKER ?= docker
 
 COMPOSE ?= $(SUDO)$(DOCKER) compose -f docker-compose.yml
 
-# EDGE_CROWDSEC=off (default on) starts the stack without the CrowdSec container. It is a
-# --scale rather than a compose profile because enabling a profile on the command line
-# replaces COMPOSE_PROFILES from .env instead of adding to it, which would drop the shared
-# database on hosts that run it (see scripts/mode-lib.sh). Empty in the default case, so
-# the command line is unchanged. render-config.sh, which every start path runs first,
-# rejects any other value.
-EDGE_CROWDSEC := $(strip $(shell grep '^EDGE_CROWDSEC=' .env 2>/dev/null | cut -d'=' -f2))
-CROWDSEC_SCALE := $(if $(filter off,$(EDGE_CROWDSEC)),--scale crowdsec=0,)
+# CrowdSec follows EDGE_TLS_MODE: it runs with letsencrypt and retires behind Cloudflare
+# (origin-ca), mirroring scripts/mode-lib.sh, which is the authority on the derivation.
+# It is a --scale rather than a compose profile because enabling a profile on the command
+# line replaces COMPOSE_PROFILES from .env instead of adding to it, which would drop the
+# shared database on hosts that run it. Empty in the letsencrypt case, so the command
+# line is unchanged. render-config.sh, which every start path runs first, rejects any
+# other value.
+EDGE_TLS_MODE := $(strip $(shell grep '^EDGE_TLS_MODE=' .env 2>/dev/null | cut -d'=' -f2))
+CROWDSEC_SCALE := $(if $(filter origin-ca,$(EDGE_TLS_MODE)),--scale crowdsec=0,)
 
 SCRIPTS := ./scripts
 

@@ -20,7 +20,7 @@ echo "Initialising..."
 [ -f .env ] && { set -a; . ./.env; set +a; }
 EDGE_NETWORK="${EDGE_NETWORK:-edge}"
 
-# EDGE_CROWDSEC decides whether the CrowdSec container is started at all
+# The host mode decides whether the CrowdSec container is started at all
 . "$SCRIPT_DIR/mode-lib.sh"
 edge_load_modes "$ROOT_DIR" || exit 1
 
@@ -31,12 +31,12 @@ echo "Network ready ($EDGE_NETWORK)"
 # Substitute .env values into the config files (stops here when something is unset)
 "$SCRIPT_DIR/render-config.sh"
 
-# Unquoted on purpose: edge_compose_up_args expands to nothing unless EDGE_CROWDSEC=off
+# Unquoted on purpose: edge_compose_up_args expands to nothing on letsencrypt hosts
 docker compose up -d $(edge_compose_up_args)
 if crowdsec_enabled; then
   echo "Traefik and CrowdSec started"
 else
-  echo "Traefik started (EDGE_CROWDSEC=off, so there is no CrowdSec container)"
+  echo "Traefik started (origin-ca: CrowdSec retires behind Cloudflare)"
 fi
 
 echo ""

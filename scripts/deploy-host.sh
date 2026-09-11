@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 # watched by Traefik as well, so this script has nothing to do for either. A recreate is
 # only needed after a change to Traefik's static config or the CrowdSec config.
 
-# EDGE_CROWDSEC decides whether the CrowdSec container is part of the stack at all
+# The host mode decides whether the CrowdSec container is part of the stack at all
 . ./scripts/mode-lib.sh
 edge_load_modes . || exit 1
 
@@ -35,7 +35,7 @@ config_hash() {
 new_hash="$(config_hash)"
 old_hash="$(cat "$STATE_FILE" 2>/dev/null || true)"
 
-# Unquoted on purpose: edge_compose_up_args expands to nothing unless EDGE_CROWDSEC=off
+# Unquoted on purpose: edge_compose_up_args expands to nothing on letsencrypt hosts
 sudo docker compose up -d --remove-orphans $(edge_compose_up_args)
 
 # With CrowdSec off there is no container to restart, and naming one that is not running

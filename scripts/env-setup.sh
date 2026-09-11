@@ -28,7 +28,6 @@ options_for() {
   case "$1" in
     APP_ENV)              echo "local staging production" ;;
     EDGE_TLS_MODE)        echo "letsencrypt origin-ca" ;;
-    EDGE_CROWDSEC)        echo "on off" ;;
     APP_DEBUG)            echo "true false" ;;
     MAIL_MAILER)          echo "ses log smtp" ;;
     LOG_LEVEL)            echo "debug info warning error" ;;

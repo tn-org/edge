@@ -80,10 +80,12 @@ immediately.
 
 ## The two host modes
 
-`EDGE_TLS_MODE` (`letsencrypt` or `origin-ca`) and `EDGE_CROWDSEC` (`on` or `off`) select
-what the stack is made of. Their defaults are what the host did before the keys existed,
-and the scripts that care about them read them through `scripts/mode-lib.sh`, which is also
-where the defaults and the accepted values are defined once.
+`EDGE_TLS_MODE` (`letsencrypt` or `origin-ca`) selects what the stack is made of. It
+defaults to `letsencrypt`, what the host did before the key existed. The mode also
+decides whether CrowdSec runs: it does with `letsencrypt` and retires with `origin-ca`
+(behind Cloudflare); there is no separate switch. The scripts that care read the key
+through `scripts/mode-lib.sh`, which is also where the default, the derivation and the
+accepted values are defined once.
 
 - `origin-ca` means the certificates are the files in `certs/` (Cloudflare Origin CA, 15
   years, placed by hand). `render-config.sh` lists them in

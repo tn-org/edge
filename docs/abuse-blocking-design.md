@@ -83,19 +83,20 @@ numbers are in.
 - Unblocking through the console is written to its audit log.
 - The 08:00 daily report lists the last 24 hours of blocks broken down by scenario.
 
-## Turning it off (`EDGE_CROWDSEC=off`)
+## Where it does not run (origin-ca hosts)
 
-A host can run without any of this: no CrowdSec container, and no bouncer in the default
-middleware list of the websecure entrypoint. Everything else in the layout above is Traefik
-middleware and stays — the rate limit, the concurrency limit and the security headers keep
-applying to every router.
+CrowdSec follows `EDGE_TLS_MODE` and has no switch of its own: with `origin-ca` the host
+sits behind the Cloudflare proxy with the security group admitting only Cloudflare, so
+edge-level banning retires — no CrowdSec container, and no bouncer in the default
+middleware list of the websecure entrypoint. Everything else in the layout above is
+Traefik middleware and stays — the rate limit, the concurrency limit and the security
+headers keep applying to every router; blocking a client on such a host is done at
+Cloudflare.
 
 What goes with it is stated rather than faked: `report-bans.timer` is not installed,
 `make ban` stops with the reason, and `bans-sync` publishes no `bans.json` and answers
-queued console requests with an error, so the console shows no blocking state for the host
-instead of an empty list. Being behind the Cloudflare proxy is not on its own a reason to
-switch it off: the real client IP still arrives (`X-Forwarded-For`, trusted only from
-Cloudflare's ranges), and a free Cloudflare plan blocks nothing by itself.
+queued console requests with an error, so the console shows no blocking state for the
+host instead of an empty list.
 
 ## Known gaps
 
