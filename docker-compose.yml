@@ -63,11 +63,11 @@ services:
     depends_on:
       crowdsec:
         condition: service_started
-        # On origin-ca hosts (behind Cloudflare) the stack starts with the CrowdSec
-        # service scaled to zero, so the dependency has to be optional. The proxy does
-        # not need it either way: the bouncer plugin answers from its local copy of the
-        # decisions and lets traffic through while CrowdSec is down (see
-        # traefik/dynamic/middlewares.yml).
+        # On origin-ca hosts (behind Cloudflare) and with EDGE_CROWDSEC=off the stack
+        # starts with the CrowdSec service scaled to zero, so the dependency has to be
+        # optional. The proxy does not need it either way: the bouncer plugin answers
+        # from its local copy of the decisions and lets traffic through while CrowdSec
+        # is down (see traefik/dynamic/middlewares.yml).
         required: false
 
   # ---------------------------------------------------------------------------
@@ -75,11 +75,11 @@ services:
   # plugin inside Traefik queries the LAPI to enforce them.
   # The LAPI publishes no port; it is reachable only from Traefik on the shared network.
   #
-  # EDGE_TLS_MODE=origin-ca (behind Cloudflare) keeps this container out: every start
-  # path scales it to zero (scripts/mode-lib.sh) and render-config.sh drops the bouncer
-  # from Traefik's default middlewares. Rate limiting, the concurrency limit and the
-  # security headers are Traefik's own and stay in place. With letsencrypt (the default)
-  # this service runs as it always has.
+  # EDGE_TLS_MODE=origin-ca (behind Cloudflare) or EDGE_CROWDSEC=off keeps this container
+  # out: every start path scales it to zero (scripts/mode-lib.sh) and render-config.sh
+  # drops the bouncer from Traefik's default middlewares. Rate limiting, the concurrency
+  # limit and the security headers are Traefik's own and stay in place. With letsencrypt
+  # and EDGE_CROWDSEC=auto (the defaults) this service runs as it always has.
   # ---------------------------------------------------------------------------
   crowdsec:
     image: crowdsecurity/crowdsec:latest

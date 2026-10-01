@@ -26,13 +26,13 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 source "$SCRIPT_DIR/choose.sh"
 . "$SCRIPT_DIR/mode-lib.sh"
 
-# Every operation here goes through the CrowdSec LAPI or the parser whitelist, and behind
-# Cloudflare (origin-ca, where CrowdSec retires) neither exists. Stop with the reason
-# rather than let cscli fail against a container that is not running.
+# Every operation here goes through the CrowdSec LAPI or the parser whitelist, and on a
+# host without CrowdSec (origin-ca, or EDGE_CROWDSEC=off) neither exists. Stop with the
+# reason rather than let cscli fail against a container that is not running.
 edge_load_modes "$ROOT_DIR" || exit 1
 if ! crowdsec_enabled; then
-  echo "CrowdSec retires behind Cloudflare (EDGE_TLS_MODE=origin-ca): nothing blocks here, so there is nothing to operate" >&2
-  echo "Blocking runs on letsencrypt hosts; block at Cloudflare for this one" >&2
+  echo "CrowdSec does not run on this host ($(crowdsec_off_reason)): nothing blocks here, so there is nothing to operate" >&2
+  echo "Blocking runs only with EDGE_TLS_MODE=letsencrypt and EDGE_CROWDSEC=auto; behind Cloudflare, block at Cloudflare" >&2
   exit 1
 fi
 

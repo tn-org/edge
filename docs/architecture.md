@@ -80,22 +80,24 @@ immediately.
 
 ## The two host modes
 
-`EDGE_TLS_MODE` (`letsencrypt` or `origin-ca`) selects what the stack is made of. It
-defaults to `letsencrypt`, what the host did before the key existed. The mode also
-decides whether CrowdSec runs: it does with `letsencrypt` and retires with `origin-ca`
-(behind Cloudflare); there is no separate switch. The scripts that care read the key
-through `scripts/mode-lib.sh`, which is also where the default, the derivation and the
-accepted values are defined once.
+`EDGE_TLS_MODE` (`letsencrypt` or `origin-ca`) and `EDGE_CROWDSEC` (`auto` or `off`)
+select what the stack is made of. Their defaults (`letsencrypt`, `auto`) are what the host
+did before the keys existed. CrowdSec runs only when both allow it: with `auto` it
+follows the TLS mode (runs with `letsencrypt`, not with `origin-ca` behind Cloudflare),
+and `off` stops it on any host. There is no `on`, because no host needs it behind
+Cloudflare. The scripts that care read the keys through `scripts/mode-lib.sh`, which is
+also where the defaults, the derivation and the accepted values are defined once.
 
 - `origin-ca` means the certificates are the files in `certs/` (Cloudflare Origin CA, 15
   years, placed by hand). `render-config.sh` lists them in
   `traefik/dynamic/generated-tls.yml` and filters ACME out of the static config. Port 80
   and the redirect to HTTPS are unchanged, so the only difference is where a certificate
   comes from. The ACME store is left in place, which is what makes going back one key.
-- `off` means no CrowdSec container and no bouncer in the entrypoint's default middlewares.
-  Rate limiting, the concurrency limit and the security headers are Traefik's own and are
-  unaffected. The blocking report timer is not installed and `bans.json` is not published,
-  so nothing reports a guard that is not running.
+- No CrowdSec (`origin-ca`, or `EDGE_CROWDSEC=off`) means no CrowdSec container and no
+  bouncer in the entrypoint's default middlewares. Rate limiting, the concurrency limit
+  and the security headers are Traefik's own and are unaffected. The blocking report
+  timer is not installed and `bans.json` is not published, so nothing reports a guard
+  that is not running.
 
 Both filters run over the already substituted static config and check their own result, so
 a template edit that moves the lines they look for fails the render instead of producing a

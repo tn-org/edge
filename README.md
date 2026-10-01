@@ -179,6 +179,7 @@ are written either way and simply go unread.
 | `EDGE_NETWORK`         | `edge`        | Name of the one shared docker network; edge and every application join it as external                 |
 | `EDGE_TLS_MODE`        | `letsencrypt` | `letsencrypt` = Traefik's ACME resolver; `origin-ca` = certificates placed by hand in `certs/`        |
 | `ACME_EMAIL`           | —             | Registration address for Let's Encrypt (where expiry notices go)                                      |
+| `EDGE_CROWDSEC`        | `auto`        | `auto` = follow `EDGE_TLS_MODE`; `off` = no CrowdSec container and no bouncer, whatever the TLS mode  |
 | `CROWDSEC_BOUNCER_KEY` | —             | Shared secret between the Traefik bouncer and the CrowdSec LAPI; compose refuses to start without it  |
 | `COMPOSE_PROFILES`     | —             | Optional services to include in `up`/`update`; `db` adds the shared PostgreSQL instance               |
 | `POSTGRES_PASSWORD`    | —             | Superuser password of the shared PostgreSQL instance; read only when the db service starts            |
@@ -226,26 +227,57 @@ it serves the certificate files in `certs/`, which Cloudflare issues for 15 year
    certificate covers `example.com` and `*.example.com`.
 2. Save the two halves on the host as `certs/<apex>.pem` and `certs/<apex>.key`
    (the directory is created by `make render` and is not tracked by git).
-3. Set `EDGE_TLS_MODE=origin-ca` in `.env` and run `make up`.
+3. Set `EDGE_TLS_MODE=origin-ca` in `.env` and run `make update`.
 
 `scripts/render-config.sh` writes every pair it finds into
 `traefik/dynamic/generated-tls.yml` and leaves ACME out of the static config; Traefik picks
 a certificate per connection by SNI, so several apexes can share one host. Port 80 and the
 redirect to HTTPS stay exactly as they are in either mode. The daily certificate report
 reads `certs/` instead of the ACME store and warns the same way. Going back is
-`EDGE_TLS_MODE=letsencrypt` plus `make up`: the ACME store is never deleted.
+`EDGE_TLS_MODE=letsencrypt` plus `make update`: the ACME store is never deleted.
+
+`make update` rather than `make up`, here and for every mode key: the mode changes
+Traefik's static config, which Traefik reads only when it starts, and `make up` does not
+recreate a running container. `make update` first follows origin like any update, then
+runs `scripts/deploy-host.sh`, which renders the config, brings compose in line with the
+mode (the CrowdSec service scaled to zero when it does not run), and restarts Traefik
+because the static config changed. A mode change applied with `make up` alone stays
+inactive until the next `make update` (the daily one too, on hosts that enable
+`edge-update.timer`), so run `make update` right after editing `.env` and check the
+result.
 
 ### Behind Cloudflare there is no abuse detection on this host
 
-CrowdSec has no switch of its own: it follows `EDGE_TLS_MODE`. With `letsencrypt` it
-runs as it always has. With `origin-ca` it retires — the host sits behind the Cloudflare
-proxy with its security group admitting only Cloudflare, so edge-level IP banning is
-redundant and stops together with the switch, with no separate step: no container, no
-bouncer in the default middleware list, no blocking report timer, `make ban` stops with
-the reason, and no blocking state is published to the ops console, so no screen shows a
-guard that is not running. The rate limit, the concurrency limit and the security
-headers are Traefik's own and stay in place in both modes; blocking a client on an
-origin-ca host is done at Cloudflare.
+With `EDGE_CROWDSEC=auto` (the default) CrowdSec follows `EDGE_TLS_MODE`. With
+`letsencrypt` it runs as it always has. With `origin-ca` it does not run — the host sits
+behind the Cloudflare proxy with its security group admitting only Cloudflare, so
+edge-level IP banning is redundant and stops together with the switch, with no separate
+step: no container, no bouncer in the default middleware list, no blocking report timer,
+`make ban` stops with the reason, and no blocking state is published to the ops console,
+so no screen shows a guard that is not running. The rate limit, the concurrency limit
+and the security headers are Traefik's own and stay in place in every mode; blocking a
+client on an origin-ca host is done at Cloudflare.
+
+### `EDGE_CROWDSEC=off` — no abuse detection on a letsencrypt host
+
+For a host whose application's legitimate traffic matches the HTTP detection scenarios
+(for example many requests for extension-less image URLs at once, or a run of 404s the
+application returns by design) and cannot be changed yet, so CrowdSec would keep
+blocking real users. `off` stops CrowdSec whatever `EDGE_TLS_MODE` says, with exactly
+the result described above for `origin-ca`.
+
+```
+make env KEY=EDGE_CROWDSEC VALUE=off  # writes the key to .env
+make update      # renders without the bouncer, drops CrowdSec, restarts Traefik
+make host-apply  # removes the blocking report timer
+```
+
+Why `make update` and not `make up` is explained under `EDGE_TLS_MODE=origin-ca` above:
+here the bouncer leaves Traefik's static config.
+
+Going back is `EDGE_CROWDSEC=auto` plus the same two commands (`make update`, then
+`make host-apply`). Only `auto` and `off` are accepted; there is no `on`, because no
+host needs blocking behind Cloudflare.
 
 ## Traefik dashboard (optional)
 

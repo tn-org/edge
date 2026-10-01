@@ -83,15 +83,22 @@ numbers are in.
 - Unblocking through the console is written to its audit log.
 - The 08:00 daily report lists the last 24 hours of blocks broken down by scenario.
 
-## Where it does not run (origin-ca hosts)
+## Where it does not run (origin-ca hosts, `EDGE_CROWDSEC=off`)
 
-CrowdSec follows `EDGE_TLS_MODE` and has no switch of its own: with `origin-ca` the host
-sits behind the Cloudflare proxy with the security group admitting only Cloudflare, so
-edge-level banning retires — no CrowdSec container, and no bouncer in the default
-middleware list of the websecure entrypoint. Everything else in the layout above is
-Traefik middleware and stays — the rate limit, the concurrency limit and the security
-headers keep applying to every router; blocking a client on such a host is done at
+By default (`EDGE_CROWDSEC=auto`) CrowdSec follows `EDGE_TLS_MODE`: with `origin-ca` the
+host sits behind the Cloudflare proxy with the security group admitting only Cloudflare,
+so edge-level banning does not run — no CrowdSec container, and no bouncer in the default
+middleware list of the websecure entrypoint. Blocking a client on such a host is done at
 Cloudflare.
+
+`EDGE_CROWDSEC=off` gives the same result on any host, letsencrypt included. It is for a
+host whose application's legitimate traffic matches the HTTP scenarios above (many
+requests for extension-less image URLs at once, a run of 404s returned by design) and
+cannot be changed yet, so CrowdSec would keep blocking real users. There is no `on`: no
+host needs banning behind Cloudflare, and the value can be added when one does.
+
+In both cases everything else in the layout above is Traefik middleware and stays — the
+rate limit, the concurrency limit and the security headers keep applying to every router.
 
 What goes with it is stated rather than faked: `report-bans.timer` is not installed,
 `make ban` stops with the reason, and `bans-sync` publishes no `bans.json` and answers

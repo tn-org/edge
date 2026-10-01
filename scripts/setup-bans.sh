@@ -40,7 +40,7 @@ sudo rm -f /etc/systemd/system/report-fail2ban.service /etc/systemd/system/cert-
 # what the host actually runs.
 if ! crowdsec_enabled; then
   echo ""
-  echo "CrowdSec retires behind Cloudflare (EDGE_TLS_MODE=origin-ca): the blocking report timer is not installed"
+  echo "CrowdSec does not run on this host ($(crowdsec_off_reason)): the blocking report timer is not installed"
   if systemctl list-unit-files --no-legend report-bans.timer 2>/dev/null | grep -q report-bans; then
     echo "Removing the report-bans timer left from the previous mode..."
     sudo systemctl disable --now report-bans.timer 2>/dev/null || true
@@ -48,7 +48,7 @@ if ! crowdsec_enabled; then
     sudo systemctl daemon-reload
   fi
   echo ""
-  echo "Blocking setup skipped (going back to EDGE_TLS_MODE=letsencrypt brings it back)"
+  echo "Blocking setup skipped (it comes back once CrowdSec runs: EDGE_TLS_MODE=letsencrypt and EDGE_CROWDSEC=auto)"
   exit 0
 fi
 

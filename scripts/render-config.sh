@@ -9,10 +9,10 @@
 #   - The CrowdSec LAPI key cannot be written into the dynamic config for the same reason.
 #     It is written to a file for the bouncer plugin's crowdsecLapiKeyFile option.
 #
-# The host mode in .env (EDGE_TLS_MODE; see scripts/mode-lib.sh) is applied here as
-# well, by filtering the static config after the substitution above. Both filters are
-# skipped at the default (letsencrypt), so a host that does not set the key gets the
-# same file as before it existed.
+# The host modes in .env (EDGE_TLS_MODE, EDGE_CROWDSEC; see scripts/mode-lib.sh) are
+# applied here as well, by filtering the static config after the substitution above. Both
+# filters are skipped at the defaults (letsencrypt + auto), so a host that does not set
+# the keys gets the same file as before they existed.
 #
 # Output (none of it tracked by git):
 #   traefik/generated/traefik.yml     static config
@@ -34,7 +34,8 @@ cd "$ROOT_DIR"
 
 # Layout of the sync/ directory shared with the ops console
 . "$SCRIPT_DIR/sync-lib.sh"
-# EDGE_TLS_MODE with its default and validation (CrowdSec presence derives from it)
+# EDGE_TLS_MODE / EDGE_CROWDSEC with their defaults and validation, and whether CrowdSec
+# runs, derived from both
 . "$SCRIPT_DIR/mode-lib.sh"
 
 ALLOW_TSV="crowdsec/generated/allowlist.tsv"
@@ -143,7 +144,7 @@ if grep -q '__ACME_EMAIL__\|__EDGE_NETWORK__' traefik/generated/traefik.yml.tmp;
 fi
 
 # ---- Mode filters over the static config ------------------------------------
-# Neither runs at the defaults (letsencrypt + on), so the file a host gets is unchanged
+# Neither runs at the defaults (letsencrypt + auto), so the file a host gets is unchanged
 # unless it asked for a mode. Both check their own result afterwards: a template edit that
 # moved the lines they look for has to fail here, not turn into a proxy that quietly
 # serves the wrong thing.
@@ -189,8 +190,8 @@ fi
 
 if ! crowdsec_enabled; then
   # The bouncer middleware is the part that talks to the LAPI, so it leaves the default
-  # middleware list together with the container. The other three are Traefik's own and
-  # apply in both modes.
+  # middleware list together with the container (origin-ca or EDGE_CROWDSEC=off). The
+  # other three are Traefik's own and apply in every mode.
   awk '/^[[:space:]]*- crowdsec-bouncer@file$/ { next } { print }' \
     traefik/generated/traefik.yml.tmp > traefik/generated/traefik.yml.tmp.2
   mv traefik/generated/traefik.yml.tmp.2 traefik/generated/traefik.yml.tmp
@@ -200,10 +201,10 @@ if ! crowdsec_enabled; then
     || ! grep -q 'ratelimit-default@file' <<< "$settings" \
     || ! grep -q 'inflight-default@file' <<< "$settings"; then
     rm -f traefik/generated/traefik.yml.tmp
-    echo "Default middlewares are not what the origin-ca mode expects (see traefik/traefik.yml)" >&2
+    echo "Default middlewares are not what a host without CrowdSec expects ($(crowdsec_off_reason); see traefik/traefik.yml)" >&2
     exit 1
   fi
-  echo "CrowdSec retires behind Cloudflare (origin-ca): no bouncer middleware and no container"
+  echo "CrowdSec does not run on this host ($(crowdsec_off_reason)): no bouncer middleware and no container"
 fi
 
 mv traefik/generated/traefik.yml.tmp traefik/generated/traefik.yml

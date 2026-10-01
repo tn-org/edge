@@ -21,8 +21,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 . "$SCRIPT_DIR/sync-lib.sh"
-# EDGE_TLS_MODE decides where the certificates are read from, and whether there
-# is any blocking on this host at all
+# EDGE_TLS_MODE decides where the certificates are read from, and together with
+# EDGE_CROWDSEC whether there is any blocking on this host at all
 . "$SCRIPT_DIR/mode-lib.sh"
 edge_load_modes "$ROOT_DIR" || exit 1
 
@@ -159,7 +159,7 @@ PY
     # Nothing blocks on this host, so there is nothing to report. Say that instead of
     # sending a daily "0 blocks" that reads like a quiet day behind a working guard.
     if ! crowdsec_enabled; then
-      echo "CrowdSec retires behind Cloudflare (EDGE_TLS_MODE=origin-ca): nothing blocks, nothing to report"
+      echo "CrowdSec does not run on this host ($(crowdsec_off_reason)): nothing blocks, nothing to report"
       exit 0
     fi
 
@@ -294,11 +294,12 @@ PY
     # implementation: what used to be a "jail" is a CrowdSec scenario name
     # such as crowdsecurity/http-probing.
     #
-    # Behind Cloudflare (origin-ca) nothing blocks here, so no snapshot is published and
-    # the previous one is removed: a host with no blocking state looks exactly like a host
-    # that has never run CrowdSec, rather than showing a stale list or an empty one that
-    # reads as "protected, nothing caught". Requests the console has already queued are
-    # answered with an error, so they do not sit in sync/ops for ever.
+    # Without CrowdSec (origin-ca, or EDGE_CROWDSEC=off) nothing blocks here, so no
+    # snapshot is published and the previous one is removed: a host with no blocking
+    # state looks exactly like a host that has never run CrowdSec, rather than showing a
+    # stale list or an empty one that reads as "protected, nothing caught". Requests the
+    # console has already queued are answered with an error, so they do not sit in
+    # sync/ops for ever.
     if ! crowdsec_enabled; then
       OFF_REQ_FILE="$(mktemp)"
       trap 'rm -f "$OFF_REQ_FILE"' EXIT
@@ -307,10 +308,10 @@ PY
       sync_pending_ops ban ip note > "$OFF_REQ_FILE"
       while IFS=$'\t' read -r id action ip note; do
         [ -n "$id" ] || continue
-        sync_write_op_result "$id" "CrowdSec retires behind Cloudflare (EDGE_TLS_MODE=origin-ca) on this host"
+        sync_write_op_result "$id" "CrowdSec does not run on this host ($(crowdsec_off_reason))"
         echo "rejected: $action $ip (CrowdSec is off on this host)" >&2
       done < "$OFF_REQ_FILE"
-      echo "CrowdSec retires behind Cloudflare (EDGE_TLS_MODE=origin-ca): no blocking state published"
+      echo "CrowdSec does not run on this host ($(crowdsec_off_reason)): no blocking state published"
       exit 0
     fi
 

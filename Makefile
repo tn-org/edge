@@ -15,15 +15,18 @@ DOCKER ?= docker
 
 COMPOSE ?= $(SUDO)$(DOCKER) compose -f docker-compose.yml
 
-# CrowdSec follows EDGE_TLS_MODE: it runs with letsencrypt and retires behind Cloudflare
-# (origin-ca), mirroring scripts/mode-lib.sh, which is the authority on the derivation.
+# CrowdSec does not run behind Cloudflare (EDGE_TLS_MODE=origin-ca) or with
+# EDGE_CROWDSEC=off, and runs otherwise, mirroring scripts/mode-lib.sh, which is the
+# authority on the derivation. The keys are read out of .env the same way it reads them
+# (first match, quotes and spaces stripped), so a quoted value means the same here.
 # It is a --scale rather than a compose profile because enabling a profile on the command
 # line replaces COMPOSE_PROFILES from .env instead of adding to it, which would drop the
-# shared database on hosts that run it. Empty in the letsencrypt case, so the command
-# line is unchanged. render-config.sh, which every start path runs first, rejects any
-# other value.
-EDGE_TLS_MODE := $(strip $(shell grep '^EDGE_TLS_MODE=' .env 2>/dev/null | cut -d'=' -f2))
-CROWDSEC_SCALE := $(if $(filter origin-ca,$(EDGE_TLS_MODE)),--scale crowdsec=0,)
+# shared database on hosts that run it. Empty when CrowdSec runs, so the command line is
+# unchanged. render-config.sh, which every start path runs first, rejects any other value
+# of either key.
+EDGE_TLS_MODE := $(strip $(shell sed -n 's/^EDGE_TLS_MODE=//p' .env 2>/dev/null | head -1 | tr -d "\"' "))
+EDGE_CROWDSEC := $(strip $(shell sed -n 's/^EDGE_CROWDSEC=//p' .env 2>/dev/null | head -1 | tr -d "\"' "))
+CROWDSEC_SCALE := $(if $(or $(filter origin-ca,$(EDGE_TLS_MODE)),$(filter off,$(EDGE_CROWDSEC))),--scale crowdsec=0,)
 
 SCRIPTS := ./scripts
 
