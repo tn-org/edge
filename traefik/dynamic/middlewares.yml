@@ -96,7 +96,9 @@ http:
             excludedIPs: *cloudflare_ips
 
     # -------------------------------------------------------------------------
-    # Security headers. HSTS is one year without includeSubDomains.
+    # Security headers. HSTS is one year with includeSubDomains (every subdomain an edge
+    # host publishes is HTTPS-only, so a plain-http subdomain would be a mistake anyway).
+    # preload is intentionally left out: it cannot be undone within a reasonable time.
     #
     # frameDeny is intentionally left out: it can break admin screens and future embeds,
     # so opt into it per application instead.
@@ -104,5 +106,6 @@ http:
     security-headers:
       headers:
         stsSeconds: 31536000
+        stsIncludeSubdomains: true
         contentTypeNosniff: true
         referrerPolicy: strict-origin-when-cross-origin
