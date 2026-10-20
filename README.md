@@ -320,16 +320,30 @@ sync/
  │  ├ timers.json                scheduled job state snapshot
  │  ├ reboot.json                pending-reboot state snapshot
  │  ├ disk-usage.json            usage per directory, plus large files directly under / (daily)
- │  └ host.json                  facts about the host itself (the dashboard FQDN)
+ │  ├ host.json                  facts about the host itself (the dashboard FQDN)
+ │  └ metrics.json               memory, swap, load and CPU of the host and of each container
  └ ops/                      the console writes req-<id>.json, the host answers res-<id>.json
 ```
 
 Snapshots are rewritten in full on every `host-sync` run through a `.tmp` file, so a
-reader never sees half of one. Operation requests (unblock an IP, run a timer, schedule a
-reboot) are picked up by the same run; a request whose `res-` file already exists is never
-run twice, and the console deletes both files once it has taken the result in. Which units
-an operation may touch is decided here (`is_managed_unit` in `scripts/report.sh`), not by
-whoever wrote the request.
+reader never sees half of one. `metrics.json` is a reading of that moment: memory and swap
+from `/proc/meminfo`, the kernel's `vm.swappiness`, the load averages, CPU usage over one
+second, and memory and CPU per running container from `docker stats`, each container with
+the compose project and service it belongs to (its compose labels, read with `docker ps`;
+null for a container compose did not create). Its swap counters are totals since boot, so
+the console works out the change between two readings. A figure that cannot be read is
+null and the rest is still written. When docker cannot be used at all (a hand-run by a
+user outside the docker group, a daemon that is down or does not answer), the container
+list is null and the host's own figures are still written: docker hangs most often when
+memory runs short, which is when those figures matter most. A list means docker answered,
+so an empty one means that no container is running. It names every running container and
+its compose project and service, the applications' too; those names are read on the host
+at run time and written only into this file.
+
+Operation requests (unblock an IP, run a timer, schedule a reboot) are picked up by the
+same run; a request whose `res-` file already exists is never run twice, and the console
+deletes both files once it has taken the result in. Which units an operation may touch is
+decided here (`is_managed_unit` in `scripts/report.sh`), not by whoever wrote the request.
 
 There is nothing to configure, and nothing to undo on a host with no console: the files
 are written either way and simply go unread.

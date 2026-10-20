@@ -151,6 +151,17 @@ since the interval column already says so.
 | Every 5 min  | Host state snapshots and operation execution                 | systemd | host-sync.timer (setup-host-sync.sh)              | Mail on failure            |
 | Sunday 06:00 | Remove unused docker images                                  | systemd | docker-prune.timer (setup-docker-prune.sh)        | Mail on failure            |
 
+`host-sync` runs `scripts/report.sh host-sync`: it rewrites the snapshots under
+`sync/state/` (blocking state, timers, pending reboot, host facts, and the memory, swap,
+load and CPU readings of the host and of each container in `metrics.json`) and runs the
+operations the console has queued. The readings are one second of CPU sampling, one
+`docker stats --no-stream`, which is cut off after 30 seconds when docker does not answer,
+and one `docker ps` for the containers' compose labels, cut off after 10 seconds, so they
+stay well inside the unit's 180-second limit. When `docker stats` cannot be used (it fails
+or is cut off, or a hand-run's user is not in the docker group), `metrics.json` is still
+written with the host's figures and a null container list, and the run still succeeds.
+See "Talking to the ops console" in `README.md`.
+
 `edge-update` is the only one disabled by default. It runs only on hosts where somebody
 ran `sudo systemctl enable --now edge-update.timer`. There is no mechanism that deploys to
 this host from the outside, and this repo contains no CI workflows.

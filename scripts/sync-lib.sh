@@ -8,7 +8,7 @@
 #
 #   sync/state/                     written here, mounted read-only by the console
 #     events/YYYY-MM-DD.ndjson      one notification per line, appended (pruned after 14 days)
-#     bans.json timers.json reboot.json disk-usage.json host.json
+#     bans.json timers.json reboot.json disk-usage.json host.json metrics.json
 #                                   full snapshots, rewritten on every run (host.json only
 #                                   when its content changed, so its generatedAt stays put)
 #   sync/ops/                       the console writes req-<id>.json, this side answers

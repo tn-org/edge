@@ -13,7 +13,8 @@
 #   report.sh timers      # write systemd timer state and run the queued operations (no notification)
 #   report.sh reboot-sync # write reboot state and apply the scheduled reboots (no notification)
 #   report.sh host-info   # write the facts about this host the console cannot derive itself
-#   report.sh host-sync   # run bans-sync, timers, reboot-sync and host-info together (host-sync.timer)
+#   report.sh host-metrics # write memory, swap, load and CPU of the host and of each container
+#   report.sh host-sync   # run bans-sync, timers, reboot-sync, host-info and host-metrics together (host-sync.timer)
 #   report.sh reboot-check # detect a pending reboot after a kernel update and warn daily while it lasts
 
 set -uo pipefail
@@ -822,6 +823,284 @@ PY
       exit 1
     fi
     ;;
+  host-metrics)
+    # Memory, swap, load and CPU, for the host as a whole and for every running container.
+    # The console runs in a container with no docker socket, so the per-container figures
+    # can only come from here; the host's own figures are read in the same pass, so that one
+    # file describes one moment.
+    #
+    # Unlike host.json this is a reading of the moment, so every run rewrites it with a new
+    # generatedAt. A figure that cannot be read is written as null and the rest still goes
+    # out. Only a failure to write the file fails the run, so a missing reading never turns
+    # into a failed host-sync.
+    #
+    # The container list is the one group that can be null as a whole: a list means docker
+    # answered (an empty one, that no container is running), null means docker could not be
+    # asked. The host's own figures are written either way, because docker hangs most often
+    # when memory runs short, which is when they matter most.
+    STAT_BEFORE="$(mktemp)"; STAT_AFTER="$(mktemp)"; STATS_FILE="$(mktemp)"; LABELS_FILE="$(mktemp)"
+    trap 'rm -f "$STAT_BEFORE" "$STAT_AFTER" "$STATS_FILE" "$LABELS_FILE"' EXIT
+
+    # CPU usage is the change in /proc/stat over one second. Take it before docker stats, so
+    # the work of the docker CLI and daemon does not show up in the host's figure.
+    cat /proc/stat > "$STAT_BEFORE" 2>/dev/null || : > "$STAT_BEFORE"
+    sleep 1
+    cat /proc/stat > "$STAT_AFTER" 2>/dev/null || : > "$STAT_AFTER"
+
+    # One JSON object per line, one line per running container. --no-stream takes two
+    # readings per container to work out the CPU figure, a second or two in all. The timeout
+    # keeps a daemon that does not answer from using up host-sync's 180 seconds.
+    # A non-zero exit is docker that cannot be used: a hand-run by a user outside the docker
+    # group (host-sync.service runs as root), a daemon that is down or did not answer in
+    # time, no docker CLI. Such a run writes the container list as null. With no container
+    # running, docker stats prints nothing and exits 0, so that case writes an empty list.
+    docker_ok=1
+    stats_err="$(timeout 30 docker stats --no-stream --format '{{json .}}' 2>&1 > "$STATS_FILE")"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+      docker_ok=0
+      : > "$STATS_FILE"
+      if [ "$rc" -eq 124 ]; then
+        reason="no answer within 30 seconds"
+      else
+        # The first line of what docker (or timeout, when docker is missing) printed
+        reason="${stats_err%%$'\n'*}"
+      fi
+      echo "docker stats cannot be used here (${reason:-exit status $rc}), writing the container list as null" >&2
+    fi
+
+    # The compose labels, one JSON array per line: [names, project, service]. docker stats
+    # prints no labels, so they come from docker ps and are matched to the stats by
+    # container name. docker has just answered, so 10 seconds is plenty. A failed or cut
+    # off run only leaves the labels null; the figures above are still written.
+    if [ "$docker_ok" -eq 1 ] && ! timeout 10 docker ps --format '[{{json .Names}},{{json (.Label "com.docker.compose.project")}},{{json (.Label "com.docker.compose.service")}}]' > "$LABELS_FILE" 2>/dev/null; then
+      : > "$LABELS_FILE"
+      echo "docker ps did not answer, writing the compose labels as null" >&2
+    fi
+
+    sync_prepare
+    python3 - "$SYNC_STATE_DIR/metrics.json.tmp" "$STAT_BEFORE" "$STAT_AFTER" "$STATS_FILE" "$LABELS_FILE" "$docker_ok" <<'PY' || exit 1
+import datetime, json, math, re, sys
+
+dest, stat_before, stat_after, stats_file, labels_file, docker_ok = sys.argv[1:7]
+
+# The JSON shape is a contract with the console: keys and types do not change. Every group
+# is always there and a figure that could not be read is null inside it, so the reader
+# never has to tell a missing group from a missing figure. The one group that is null as a
+# whole is the container list, when docker could not be asked. The conversions below give
+# null for anything they cannot read rather than raise, so one odd figure cannot keep the
+# rest from being written.
+
+def read_lines(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
+
+# JSON has no inf or nan: json.dump would write them as Infinity and NaN, which no strict
+# reader accepts, and the whole file would be lost to the console.
+def finite(value):
+    return value if math.isfinite(value) else None
+
+# A file holding one whole number, like /proc/sys/vm/swappiness
+def read_int(path):
+    lines = read_lines(path)
+    try:
+        return int(lines[0].strip())
+    except (IndexError, ValueError):
+        return None
+
+# /proc/meminfo: "MemTotal:  1983224 kB". The kernel's kB is 1024 bytes.
+meminfo = {}
+for line in read_lines("/proc/meminfo"):
+    key, _, rest = line.partition(":")
+    parts = rest.split()
+    try:
+        value = int(parts[0])
+    except (IndexError, ValueError):
+        continue
+    meminfo[key.strip()] = value * 1024 if parts[1:2] == ["kB"] else value
+
+# /proc/vmstat: pswpin / pswpout are the pages read back from swap and written out to it
+# since boot. They go out as they are; the console takes the difference between samples.
+vmstat = {}
+for line in read_lines("/proc/vmstat"):
+    parts = line.split()
+    if len(parts) == 2:
+        try:
+            vmstat[parts[0]] = int(parts[1])
+        except ValueError:
+            pass
+
+# /proc/loadavg: "0.12 0.10 0.08 1/234 5678"; the first three are the 1, 5 and 15 minute
+# load averages.
+def loadavg():
+    lines = read_lines("/proc/loadavg")
+    parts = lines[0].split() if lines else []
+    if len(parts) < 3:
+        return [None] * 3
+    try:
+        return [finite(float(p)) for p in parts[:3]]
+    except ValueError:
+        return [None] * 3
+
+# /proc/stat, read one second apart. The "cpu" line adds up every online CPU, in clock
+# ticks: user nice system idle iowait irq softirq steal guest guest_nice.
+# - usagePercent is the busy share of that second across all CPUs together, so it runs
+#   from 0 to 100 whatever the CPU count.
+# - idle and iowait count as not in use. iowait is a CPU with nothing to run while a
+#   process waits for the disk; any other process could have had it.
+# - steal counts as in use: it is time the hypervisor gave to someone else, which this
+#   host could not use either. On a burstable instance that has run out of CPU credits the
+#   figure therefore climbs even when the processes are doing no more than before.
+# - guest and guest_nice are left out, because the kernel already counts them in user and
+#   nice.
+# count is the number of online CPUs (the cpuN lines), the ones that share is taken over.
+def cpu_ticks(path):
+    count, ticks = 0, None
+    for line in read_lines(path):
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "cpu" and len(parts) >= 9:
+            try:
+                ticks = [int(p) for p in parts[1:9]]
+            except ValueError:
+                ticks = None
+        elif parts[0].startswith("cpu") and parts[0][3:].isdigit():
+            count += 1
+    return count, ticks
+
+def busy_and_total(ticks):
+    user, nice, system, idle, iowait, irq, softirq, steal = ticks
+    total = user + nice + system + idle + iowait + irq + softirq + steal
+    return total - idle - iowait, total
+
+_, before = cpu_ticks(stat_before)
+cpu_count, after = cpu_ticks(stat_after)
+usage = None
+if before and after:
+    busy_a, total_a = busy_and_total(before)
+    busy_b, total_b = busy_and_total(after)
+    if total_b > total_a:
+        share = (busy_b - busy_a) / (total_b - total_a)
+        usage = round(min(max(share, 0.0), 1.0) * 100, 1)
+
+# docker stats prints sizes the way people read them: "54.36MiB / 1.861GiB". Memory comes
+# in binary units (KiB, MiB, GiB = 1024^n); the decimal ones (kB, MB, GB = 1000^n) are
+# read too, in case a docker version prints those. docker rounds to four significant
+# figures, so the bytes are only as close as that. A unit not in the table gives null
+# rather than a guess.
+UNITS = {"b": 1}
+for power, prefix in enumerate("kmgtpe", start=1):
+    UNITS[prefix + "ib"] = 1024 ** power
+    UNITS[prefix + "b"] = 1000 ** power
+SIZE = re.compile(r"([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*([A-Za-z]+)")
+
+def to_bytes(text):
+    m = SIZE.fullmatch(text.strip())
+    if not m:
+        return None
+    factor = UNITS.get(m.group(2).lower())
+    if not factor:
+        return None
+    # The exponent lets a figure overflow to inf, which has no whole number
+    value = finite(float(m.group(1)) * factor)
+    return int(round(value)) if value is not None else None
+
+def to_percent(text):
+    # "0.30%"; a container docker could not measure shows "--"
+    try:
+        value = float(str(text).strip().rstrip("%"))
+    except ValueError:
+        return None
+    return finite(value)
+
+# The compose labels from docker ps, by container name. docker prints "" for a label the
+# container does not carry (any container compose did not create), and that becomes null.
+# The names column lists every name of the container, separated by commas.
+def label(value):
+    return value.strip()[:200] or None
+
+labels = {}
+for line in read_lines(labels_file):
+    try:
+        row = json.loads(line)
+    except ValueError:
+        continue
+    if not (isinstance(row, list) and len(row) == 3 and all(isinstance(v, str) for v in row)):
+        continue
+    names, project, service = row
+    for name in names.split(","):
+        if name.strip():
+            labels[name.strip()] = (label(project), label(service))
+
+# The memory figure is docker's own: the cgroup's usage less its inactive page cache. A
+# container with no memory limit of its own shows the host's memory as its limit.
+# cpuPercent is docker's figure too, where 100 is one whole CPU: unlike cpu.usagePercent
+# it can go past 100 on a host with more than one CPU.
+containers = []
+for line in read_lines(stats_file):
+    try:
+        row = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(row, dict):
+        continue
+    name = str(row.get("Name") or "").strip()
+    if not name or name == "--":
+        continue
+    used, _, limit = str(row.get("MemUsage") or "").partition("/")
+    project, service = labels.get(name, (None, None))
+    containers.append({
+        "name": name[:200],
+        "composeProject": project,
+        "composeService": service,
+        "memoryUsageBytes": to_bytes(used),
+        "memoryLimitBytes": to_bytes(limit),
+        "cpuPercent": to_percent(row.get("CPUPerc")),
+    })
+containers.sort(key=lambda c: c["name"])
+# null rather than [] when docker could not be asked, so the console never reads that as
+# no container running
+containers = containers[:100] if docker_ok == "1" else None
+
+one, five, fifteen = loadavg()
+payload = {
+    "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    # MemAvailable rather than MemFree: cache the kernel can drop on demand counts as
+    # available, and the daily disk usage walk alone fills a lot of it.
+    "memory": {
+        "totalBytes": meminfo.get("MemTotal"),
+        "availableBytes": meminfo.get("MemAvailable"),
+    },
+    "swap": {
+        "totalBytes": meminfo.get("SwapTotal"),
+        "freeBytes": meminfo.get("SwapFree"),
+        "pagesInTotal": vmstat.get("pswpin"),
+        "pagesOutTotal": vmstat.get("pswpout"),
+        # edge sets 10 together with its swapfile ("Swap" in README.md)
+        "swappiness": read_int("/proc/sys/vm/swappiness"),
+    },
+    "load": {"one": one, "five": five, "fifteen": fifteen},
+    "cpu": {"count": cpu_count or None, "usagePercent": usage},
+    "containers": containers,
+}
+# Every float above has been through finite(). allow_nan=False keeps a figure added later
+# without it from writing a file the console cannot parse.
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump(payload, f, allow_nan=False)
+
+# Name what could not be read, so the timer's last output in the console says it
+unread = [f"{group}.{key}" for group, values in payload.items()
+          if isinstance(values, dict) for key, value in values.items() if value is None]
+if containers is None:
+    unread.append("containers")
+count = "no" if containers is None else len(containers)
+print(f"Wrote host metrics ({count} containers; unread: {', '.join(unread) or 'none'})")
+PY
+    sync_commit_state metrics.json
+    ;;
   host-sync)
     # The periodic pass over the file channel: refresh every state snapshot and run
     # whatever the console has queued. If one part fails, the rest still run.
@@ -830,6 +1109,7 @@ PY
     "$0" timers || rc=1
     "$0" reboot-sync || rc=1
     "$0" host-info || rc=1
+    "$0" host-metrics || rc=1
     # Events are the only thing that accumulates. Nothing else prunes them on a host with
     # no console, so drop them here after two weeks.
     sync_prune_events 14
@@ -865,7 +1145,7 @@ PY
       | "$SCRIPT_DIR/notify.sh" --warn "Reboot pending: kernel or similar updates are not active yet (${days} days)"
     ;;
   *)
-    echo "usage: report.sh {os|bans|disk-usage|bans-sync|timers|reboot-sync|host-info|host-sync|reboot-check}" >&2
+    echo "usage: report.sh {os|bans|disk-usage|bans-sync|timers|reboot-sync|host-info|host-metrics|host-sync|reboot-check}" >&2
     exit 2
     ;;
 esac

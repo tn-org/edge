@@ -51,13 +51,28 @@ The host layer does not call the ops console at all. The contract is one directo
 
 - `sync/state/` is written by `scripts/notify.sh` and `scripts/report.sh` and read by the
   console. `events/YYYY-MM-DD.ndjson` gets one JSON object per notification, appended;
-  `bans.json`, `timers.json`, `reboot.json`, `disk-usage.json` and `host.json` are full
-  snapshots, rewritten through a `.tmp` file so a reader never sees half of one.
+  `bans.json`, `timers.json`, `reboot.json`, `disk-usage.json`, `host.json` and
+  `metrics.json` are full snapshots, rewritten through a `.tmp` file so a reader never
+  sees half of one.
   `host.json` carries the facts the console cannot derive on its own (currently the
   dashboard FQDN) and is only rewritten when its content changed, so the console can skip
-  a `generatedAt` it has already taken in. The JSON shape dates
-  from a fail2ban-era implementation and did not change: what used to be a fail2ban "jail"
-  is a CrowdSec scenario name.
+  a `generatedAt` it has already taken in. `metrics.json` is the opposite: a reading of
+  memory, swap, load and CPU for the host and for each running container, rewritten with
+  a new `generatedAt` on every `host-sync` run. Its swap counters (`pswpin` / `pswpout`)
+  are totals since boot, so the console takes the difference between two readings, and
+  `swap.swappiness` is the kernel's `vm.swappiness`. A container's `cpuPercent` is
+  docker's figure, where 100 is one whole CPU, while the host's `usagePercent` is the
+  share of all CPUs together. A container's `composeProject` and `composeService` are its
+  `com.docker.compose.project` and `com.docker.compose.service` labels: `docker stats`
+  prints no labels, so they are read with `docker ps` and matched by container name, and
+  they are null for a container compose did not create. A figure that cannot be read is
+  null and the rest is still written. `containers` is the one group that can be null as a
+  whole: a list means `docker stats` answered (an empty one, that no container is
+  running), null means docker could not be used, and the host's figures are written
+  either way. The rules for each figure are in the
+  `host-metrics` part of `scripts/report.sh`. The JSON shape of `bans.json` dates from a
+  fail2ban-era implementation and did not change: what used to be a fail2ban "jail" is a
+  CrowdSec scenario name.
 - `sync/ops/` is the other direction. The console writes `req-<id>.json`
   (`kind` = `ban`, `timer` or `reboot`), the host executes it during `host-sync` and writes
   `res-<id>.json` beside it; the console deletes both once it has taken the result in. A

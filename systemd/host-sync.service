@@ -3,7 +3,8 @@
 # setup-host-sync.sh replaces /path/to/edge with the real path.
 #
 # Sends the state of everything the ops console container cannot reach (CrowdSec blocks,
-# systemd, reboots) to the console, and runs the operations queued from its screens.
+# systemd, reboots, memory and CPU per container) to the console, and runs the operations
+# queued from its screens.
 
 [Unit]
 Description=Host state sync and operation execution
