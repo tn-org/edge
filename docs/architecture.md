@@ -7,9 +7,13 @@ This repo carries the host layer only. It ships the whole "box" side of a single
   built-in ACME resolver.
 - **CrowdSec** for abuse detection. It reads the Traefik access log and decides what to
   block; the bouncer plugin inside Traefik does the actual rejecting.
-- **Host maintenance**: systemd timers (disk usage, blocking report, pending reboot, host
+- **Host maintenance**: a swapfile sized from the host's memory with its boot unit and
+  swappiness setting (`scripts/setup-swap.sh`, `systemd/swapfile.swap`, `sysctl/`),
+  systemd timers (disk usage, blocking report, certificate expiry, pending reboot, host
   sync), log rotation, OS auto-updates (dnf-automatic) and the operational scripts under
-  `scripts/`.
+  `scripts/`. The swap is for the host and the edge containers; keeping application
+  containers off it is left to their own compose files. Its rules are under "Swap" in
+  `README.md`.
 
 Every host runs the same contents of this repo. It is a concrete deployment rather than a
 template, and each host clones it as-is. Everything host specific lives in `.env`, which
@@ -112,7 +116,9 @@ renders the config and runs `compose up -d`. Routing and middlewares are watched
 Traefik, so no restart is needed for them; containers are recreated only when the static
 config (`traefik/traefik.yml`, `crowdsec/`) changed.
 
-Changes under `/etc` and to systemd units require `make host-apply`, run by hand.
+Changes under `/etc` and to systemd units require `make host-apply`, run by hand. The
+same goes for a step newly added to `scripts/host-apply.sh` (the swapfile, for example):
+a running host gets it from `make update` followed by one `make host-apply`.
 
 Hosts that should follow automatically enable `edge-update.timer`, which runs
 `make update` daily at 05:00 (Asia/Tokyo). The unit is installed by `make host-apply`, but

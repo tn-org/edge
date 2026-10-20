@@ -8,7 +8,7 @@
 #   report.sh certs       # days left per certificate; warn when any is under 14 days
 #   report.sh os          # read the dnf-automatic body on stdin, notify if anything was applied
 #   report.sh bans        # record a summary of blocking status as a notification
-#   report.sh disk-usage  # write usage per directory to sync/state (no notification)
+#   report.sh disk-usage  # write directory sizes and large files in / to sync/state (no notification)
 #   report.sh bans-sync   # write blocking state and run the queued IP operations (no notification)
 #   report.sh timers      # write systemd timer state and run the queued operations (no notification)
 #   report.sh reboot-sync # write reboot state and apply the scheduled reboots (no notification)
@@ -234,21 +234,34 @@ PY
     # finer is a job for the tool itself (docker system df and friends).
     DU_FILE="$(mktemp)"
     trap 'rm -f "$DU_FILE"' EXIT
+    # The smallest entry worth recording: the floor for the deeper directories in the
+    # python below, and for the files directly under / that are added to the list
+    MIN_ENTRY_MIB=100
     sudo du -x --max-depth=3 -B1 / 2>/dev/null > "$DU_FILE"
     if [ ! -s "$DU_FILE" ]; then
       echo "du failed, skipping the record" >&2
       exit 1
     fi
+    # du lists directories only, so a file directly under / would count in the root total
+    # and in no entry. That is where scripts/setup-swap.sh puts the swapfile (and the
+    # half-written /swapfile.tmp, when a run was killed outright), and where a stray dump
+    # or disk image tends to land. Add every file there over MIN_ENTRY_MIB in du's own
+    # format, after the check above so it cannot make a failed du look like a result.
+    # The smallest swapfile is 1 GiB, far over the floor, and a leftover temporary file
+    # shows up once it is big enough to matter; the small files that live at the root
+    # (/.autorelabel and the like) say nothing about growth and stay out.
+    sudo find / -xdev -maxdepth 1 -type f -size +"${MIN_ENTRY_MIB}M" \
+      -exec du -B1 {} + 2>/dev/null >> "$DU_FILE"
 
     sync_prepare
-    python3 - "$SYNC_STATE_DIR/disk-usage.json.tmp" "$DU_FILE" <<'PY' || exit 1
+    python3 - "$SYNC_STATE_DIR/disk-usage.json.tmp" "$DU_FILE" "$MIN_ENTRY_MIB" <<'PY' || exit 1
 import datetime, json, sys
 
 dest, du_file = sys.argv[1], sys.argv[2]
 # Below the second level keep only the big entries (/var/lib/docker is worth seeing, the
 # small branches are not). The first level (/var, /home, ...) is kept regardless of size,
 # because it is the entry point on screen.
-MIN_DEEP_BYTES = 100 * 1024 * 1024
+MIN_DEEP_BYTES = int(sys.argv[3]) * 1024 * 1024
 
 entries = []
 with open(du_file, encoding="utf-8", errors="replace") as f:
@@ -261,7 +274,7 @@ with open(du_file, encoding="utf-8", errors="replace") as f:
         except ValueError:
             continue
         path = parts[1]
-        # The console already records the root total from df, so leave it out
+        # The console already records the root total from df, so leave it out.
         if path == "/":
             continue
         if path.count("/") >= 2 and size < MIN_DEEP_BYTES:
@@ -281,7 +294,7 @@ with open(dest, "w", encoding="utf-8") as f:
         "scope": "/",
         "entries": entries,
     }, f)
-print(f"Recorded disk usage per directory ({len(entries)} entries)")
+print(f"Recorded disk usage per directory and of large files directly under / ({len(entries)} entries)")
 PY
     sync_commit_state disk-usage.json
     ;;

@@ -84,11 +84,25 @@ installed by `make host-apply`; enable it once per host with
 
 | Command             | Purpose                                                 | Arguments                                                  | Runs on | Called by                           |
 | ------------------- | ------------------------------------------------------- | ---------------------------------------------------------- | ------- | ----------------------------------- |
-| `make host-apply`   | Apply host config (log rotation, timers)                | —                                                          | server  | manual, setup.sh                    |
+| `make host-apply`   | Apply host config (swap, log rotation, timers)          | —                                                          | server  | manual, setup.sh                    |
 | `make ban`          | Block and allowlist operations (interactive by default) | `[CMD=list\|ban\|unban\|allow\|disallow\|allowed]` `[IP=]` | server  | manual, requests from the console   |
 | `make bans`         | Show blocking status (display only, no notification)    | —                                                          | server  | manual                              |
 | `make docker-prune` | Remove unused docker images                             | —                                                          | server  | manual (weekly: docker-prune.timer) |
 
+- `host-apply` runs the `scripts/setup-*.sh` steps in turn: first the swapfile with its
+  boot unit and its swappiness (`setup-swap.sh`), then log rotation, OS auto-updates, the
+  blocking report, the image cleanup, the disk usage record, the certificate report, host
+  sync and the auto-follow unit, and it ends with one host sync run. The whole run is
+  safe to repeat, and only one runs at a time: a second `host-apply` waits up to 10
+  minutes for the first, then fails without changing anything. A running host picks up a
+  new step with `make update` followed by one `make host-apply`.
+- Two failures do not fail `host-apply`. A failure of the swap step goes to the ops
+  console as a warning and the other steps run as usual; "Swap" in `README.md` gives the
+  reasons, and also says when to run the `host-apply` that creates the swapfile, which
+  keeps the disk busy. A failure of the closing host sync run prints a warning: on a new
+  host CrowdSec's LAPI may not answer yet, `host-sync.timer` runs the sync again about 5
+  minutes later, and `host-sync.service` reports its own failure to the ops console
+  through `notify-failure@`.
 - `ban CMD=ban` blocks for 24 hours by default. Override with
   `BAN_DURATION=72h make ban CMD=ban IP=…`.
 - `allow` and `disallow` rewrite the allowlist (`crowdsec/generated/allowlist.tsv`) and

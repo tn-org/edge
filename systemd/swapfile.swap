@@ -1,0 +1,27 @@
+# Turns on the swapfile created by setup-swap.sh at boot
+# Installed to: /etc/systemd/system/swapfile.swap (by setup-swap.sh, together with
+# sysctl/99-zz-swap.conf; when it is installed and taken out again: "Swap" in the README)
+#
+# systemd only loads a swap unit whose name is the path in What= escaped
+# (systemd-escape --path /swapfile gives "swapfile"), so the file name and What= change
+# together or not at all, and SWAPFILE in setup-swap.sh with them.
+# A unit here takes precedence over the one systemd-fstab-generator makes from an
+# /etc/fstab line for /swapfile, but such a line, unless it has nofail or noauto, still
+# makes swap.target require this unit (see "Swap" in the README).
+
+[Unit]
+Description=Swapfile created by edge (/swapfile)
+# A /swapfile that is gone skips the unit at boot instead of failing it
+ConditionPathExists=/swapfile
+# notify-failure@ is installed by steps of host-apply.sh that come after setup-swap. On a
+# new host where host-apply stopped before them, a failure here stays in the journal only
+# (see "Swap" in the README).
+OnFailure=notify-failure@%n.service
+
+[Swap]
+What=/swapfile
+
+[Install]
+# Wanted rather than required, so a swapfile that cannot be turned on fails this unit
+# alone; an /etc/fstab line as described at the top makes it required all the same
+WantedBy=swap.target

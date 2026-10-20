@@ -7,13 +7,13 @@ placeholders to substitute. Everything that differs per host lives in
 
 What is in here:
 
-| Path                                  | Role                                                                        |
-| ------------------------------------- | --------------------------------------------------------------------------- |
-| `docker-compose.yml`                  | Traefik v3 (80/443, ACME) and CrowdSec, both joining a shared network       |
-| `traefik/`                            | Static config template plus the host-wide dynamic config (TLS, middlewares) |
-| `crowdsec/`                           | Acquisition (Traefik access log) and the collections to enable              |
-| `systemd/` `logrotate/` `auto-patch/` | Host maintenance timers, log rotation, OS auto-updates                      |
-| `scripts/`                            | Setup, deploy, notification and blocking operations                         |
+| Path                                            | Role                                                                        |
+| ----------------------------------------------- | --------------------------------------------------------------------------- |
+| `docker-compose.yml`                            | Traefik v3 (80/443, ACME) and CrowdSec, both joining a shared network       |
+| `traefik/`                                      | Static config template plus the host-wide dynamic config (TLS, middlewares) |
+| `crowdsec/`                                     | Acquisition (Traefik access log) and the collections to enable              |
+| `systemd/` `logrotate/` `auto-patch/` `sysctl/` | Host maintenance timers, log rotation, OS auto-updates, swap unit + tuning  |
+| `scripts/`                                      | Setup, deploy, notification and blocking operations                         |
 
 **Nothing here is application specific.** There is no domain list, no upstream list and
 no certificate mapping. Each application declares how it is exposed through Traefik
@@ -57,10 +57,11 @@ Log in to the server over SSH or a session manager as the deploy user (for examp
    It installs the runtime (docker, the compose plugin, make — a fresh Amazon Linux
    2023 AMI ships none of them), asks for the ACME e-mail and whether this host runs
    the shared PostgreSQL, fills `.env` (secrets generated with openssl) and runs
-   `make setup`: shared network, rendered config, Traefik + CrowdSec, and the `/etc`
-   files and systemd timers (log rotation, OS auto-updates, blocking report, disk
-   usage record, host sync). The auto-follow timer (`edge-update`) is installed but
-   deliberately left disabled.
+   `make setup`: shared network, rendered config, Traefik + CrowdSec, then a swapfile
+   with its boot unit and swappiness setting (see "Swap" below), the `/etc` files and
+   systemd timers (log rotation, OS auto-updates, pending reboot check, blocking report,
+   certificate expiry report, disk usage record, host sync). The auto-follow timer
+   (`edge-update`) is installed but deliberately left disabled.
 
    Idempotent — existing `.env` values are never overwritten. Pass
    `--acme-email <addr>` and `--db`/`--no-db` to skip the prompts, or
@@ -111,6 +112,168 @@ Stop it with `sudo systemctl disable --now edge-update.timer`. Failures are pick
 by hand, run
 `sudo systemctl start edge-update.service` and `journalctl -u edge-update -n 30`.
 
+## Swap
+
+`make host-apply` (and so `make setup` on a new host) gives the host a swapfile, so a
+memory spike pushes pages out to disk instead of ending with the OOM killer taking a
+process down. It is there for the host itself and the edge containers. Keeping
+application containers off swap is up to their own compose files (for example
+`memswap_limit` equal to `mem_limit`); edge does not touch them. `scripts/setup-swap.sh`
+does the work; this section is where its rules and the reasons for them are kept.
+
+### Size and disk space
+
+`/swapfile` is as large as the host's memory (`MemTotal`), rounded up to a whole GiB and
+kept between 1 GiB and 4 GiB. There is no `.env` key for it.
+
+- Rounded up because `MemTotal` reads a little under the instance's nominal size (a
+  2 GiB instance reports about 1.9 GiB), so the result matches the instance size.
+- As much as memory: swap here only has to hold a spike until it passes or someone
+  looks, and when every application container's compose file sets `memswap_limit` (see
+  above) only the host processes and the edge containers swap at all, so one memory's
+  worth is ample without taking much disk. A container whose compose file does not set it
+  swaps as well, by Docker's default: as much as its `mem_limit` when it has one, and as
+  much as the host has when it has none.
+- At least 1 GiB, so the smallest instances still get a margin worth having.
+- At most 4 GiB: a host that would fill more than that is short of memory and would be
+  crawling on disk long before it used it all; give it a bigger instance instead.
+
+The swapfile may leave the root filesystem at most 75% used. The ops console's hourly
+disk check warns at 80%, and the 5 points in between are room for the logs and images
+that grow day to day, not a guarantee: the check is made once, when the file is created,
+and on a new host that is before the applications are on it, so what they add later can
+still take the disk past 80%, with the swapfile counted in.
+
+- When the full size does not fit, it is cut down in whole GiB to the largest that does.
+- When not even 1 GiB fits, nothing is created: a full disk stops every service, which is
+  worse than having no swap. A warning goes to the ops console and the swap step still
+  succeeds, since the warning already says what to do and a failure would only add a
+  second warning about the same thing. Free up space or grow the root volume (and its
+  filesystem), then run `make host-apply` again.
+- No `/swapfile` is created on a host that already has other active swap.
+
+The size is decided once, when the file is created. After resizing the instance, or after
+making room on a disk that gave a smaller swapfile, recreate it (the run writes the file
+again; see below for when to run it):
+
+```
+sudo swapoff /swapfile && sudo rm /swapfile && make host-apply
+```
+
+`swapoff` first reads every page in the swapfile back into memory. When the free memory
+cannot take them, the OOM killer takes a service down to make room, or `swapoff` fails
+with `ENOMEM` ("Cannot allocate memory") and leaves the file on; the `&&` then stops the
+rest. Look at `free -m` before running it: the `used` figure on the `Swap:` line should
+fit well within the `available` figure on the `Mem:` line. When it does not, wait until
+swap use comes down, or run it at a time when the services can be restarted.
+
+### Boot unit and swappiness
+
+- `systemd/swapfile.swap` turns `/swapfile` on at boot. `make host-apply` installs and
+  enables it whenever it has `/swapfile` on. It is a unit rather than an `/etc/fstab`
+  line because a file of edge's own is replaced whole, like every other unit here, with
+  nothing to tell apart from lines other people wrote.
+- The unit is skipped at boot when `/swapfile` is not there, so a missing file fails
+  nothing. A `/swapfile` that is there but cannot be turned on fails the unit, and the
+  failure goes to the ops console through `notify-failure@`, as for every other edge
+  unit. `notify-failure@` is installed by steps of `make host-apply` that come after the
+  swap step (`setup-auto-patch` is the first of them). On a new host where
+  `make host-apply` stopped before them, a failure at boot stays in the journal and
+  reaches no one until a run gets past them.
+- `vm.swappiness = 10` comes from `sysctl/99-zz-swap.conf`: swap is a safety margin, so
+  the kernel drops page cache first and swaps only under real memory pressure (the file
+  explains the value). It is installed and loaded together with the unit.
+- Both files are taken out again only when `/swapfile` is gone and `make host-apply`
+  does not create it again (the disk is short, or the host has other active swap): the
+  tuning is written for this swapfile. On a host whose swap was set up some other way
+  from the start they are never installed, and its swappiness is never touched.
+- Taking the sysctl file out leaves the running value as it is. `vm.swappiness` stays at
+  10 until the next boot: what it was before is not recorded, and writing the kernel
+  default could override what another sysctl file sets. With no swap active the value
+  has no effect; with other swap active, 10 goes on applying to that swap until the next
+  boot. From then on the remaining sysctl files decide, or the kernel default (60) when
+  none of them sets it.
+- A line for `/swapfile` in `/etc/fstab` is left as it is. The unit edge installs takes
+  precedence over the one systemd-fstab-generator makes from that line, so it is still
+  edge's unit that turns the file on, but the generator also makes the unit a
+  requirement of `swap.target` (unless the line has `nofail` or `noauto`). That holds
+  even though edge's unit is only wanted: a `/swapfile` that cannot be turned on at boot
+  then fails `swap.target` along with the unit. `make host-apply` prints a warning when
+  it finds such a line; removing the line makes the swap optional again.
+
+### When the swap step fails
+
+It is the first step of `make host-apply`, so the swapfile is in place before
+`setup-auto-patch` installs dnf-automatic: dnf reads the repository metadata into memory,
+which on a host with 0.5-1 GiB can be enough to bring in the OOM killer. On a new host the
+runtime install in `bootstrap-host.sh` and the stack that `init.sh` starts still come
+before it, and go without swap.
+
+A failure in it (a `/swapfile` that cannot be used, a failed write) does not fail the
+run. The other steps work without swap, and what they lose on a small host is the margin
+against the OOM killer during that install, which is not worth leaving log rotation, OS
+auto-updates and the timers unapplied. A warning goes to the ops console, the other steps
+are applied as usual and `make host-apply` still succeeds. On a new host a failure could
+not keep the stack from starting either way, since `make setup` runs `make host-apply`
+after `init.sh` has started it; it would only end `make setup` before its checks and
+report a failed setup for a host that is otherwise complete. An interruption (Ctrl-C, a
+dropped session) still stops the run, as at any other step. Fix the cause and run
+`make host-apply` again.
+
+### Writing the swapfile keeps the root volume busy
+
+`dd` writes every block, which takes several seconds per GiB (tens of seconds at the
+larger sizes) and can use the volume's whole write throughput for that long;
+`oflag=direct` keeps it out of the page cache, not off the disk. On a host that is
+serving traffic, run the `make host-apply` that creates it at a quiet time. A host that
+is already running picks it up with one `make host-apply` after the update:
+
+```
+cd /app/edge
+make update
+make host-apply
+```
+
+Check the result with `swapon --show` and `sysctl vm.swappiness`.
+
+### `/swapfile` belongs to edge
+
+On an edge host the path `/swapfile` is edge's. `scripts/setup-swap.sh` recognises its
+swapfile by that path alone, so a `/swapfile` made by hand is treated as edge's too:
+`make host-apply` turns it on, whether or not the host has other active swap (the unit
+turns it on at every boot anyway, and doing the same at once keeps the running host as it
+will be after its next boot), installs `swapfile.swap` for it and applies the swappiness.
+A `/swapfile` that is not a regular file holding a swap area (a directory, a symlink, a
+file `mkswap` was never run on) makes the swap step fail without changing anything, with
+a warning in the ops console. `/swapfile.tmp` is edge's as well: the swap step writes a
+new swapfile under that name before moving it into place, and every run first removes a
+file or symlink at that path as the leftover of a run that was killed outright.
+
+- `sudo swapoff /swapfile` alone does not last: `swapfile.swap` turns it back on at the
+  next boot, and the next `make host-apply` turns it on right away.
+- Removing the file after `swapoff` does not last either while the disk has room and the
+  host has no other active swap: the next `make host-apply` creates a new one. There is
+  no setting that keeps an edge host without swap.
+- Removing it without `swapoff` first leaves it on: the kernel keeps using the deleted
+  file, and its disk space, until the host reboots, because `swapoff` finds a swap area
+  by its path and the path is gone. `make host-apply` recognises this (`/proc/swaps`
+  lists it as `/swapfile\040(deleted)`), leaves the unit and the swappiness as they are
+  and says so, with a warning in the ops console; the swap step still succeeds. Run it
+  again after the next reboot. It then goes on as on any host with
+  no `/swapfile`, or with the new `/swapfile` when one has been put in place meanwhile.
+- When `/swapfile` is gone and `make host-apply` does not create it again, it takes out
+  `/etc/systemd/system/swapfile.swap` and `/etc/sysctl.d/99-zz-swap.conf` (see "Boot unit
+  and swappiness" above, also for what happens to `vm.swappiness`). The unit goes only
+  when its content is the same as `systemd/swapfile.swap` in this repo. One that differs
+  (written or edited by hand, or installed from an earlier version of the file), or that
+  cannot be compared, is left in place, and the run says so.
+- Either of those two files replaced by a symlink is left alone: `make host-apply`
+  neither writes through the link nor replaces or removes it, and does not enable or
+  load what it points to. A link to `/dev/null` is a mask (`systemctl mask` makes one for
+  a unit, and the same link masks a sysctl file). A masked unit keeps `/swapfile` off at
+  boot only; the next `make host-apply` still turns it on. A link to any other file
+  stands in for edge's file, and at boot systemd reads the file it points to.
+
 ## Exposing an application
 
 **Nothing has to change in edge.** Adding labels to the application's compose file is
@@ -156,7 +319,7 @@ sync/
  │  ├ bans.json                  blocking state snapshot
  │  ├ timers.json                scheduled job state snapshot
  │  ├ reboot.json                pending-reboot state snapshot
- │  ├ disk-usage.json            usage per directory (daily)
+ │  ├ disk-usage.json            usage per directory, plus large files directly under / (daily)
  │  └ host.json                  facts about the host itself (the dashboard FQDN)
  └ ops/                      the console writes req-<id>.json, the host answers res-<id>.json
 ```

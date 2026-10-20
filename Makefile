@@ -126,7 +126,7 @@ bans: ## Show blocking status (display only, no notification) [server]
 	@sudo $(SCRIPTS)/report.sh bans --no-notify
 
 host-apply: GUIDE = Run on the server: cd <repo> && make host-apply
-host-apply: ## Apply host config (log rotation, systemd timers, OS auto-updates) [server]
+host-apply: ## Apply host config (log rotation, systemd timers, OS auto-updates, swap) [server]
 	$(GUARD_SERVER)
 	$(SCRIPTS)/host-apply.sh
 
