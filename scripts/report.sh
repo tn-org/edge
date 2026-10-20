@@ -482,10 +482,11 @@ PY
     # are copied into systemd's standard location are ours as well.
     # Units that ship with the OS and that this repo does not configure (man page indexing
     # and the like) are left out. logrotate is included even though the unit belongs to the
-    # OS, because the configuration comes from here.
+    # OS, because the configuration comes from here. edge-update.timer is left out: it is
+    # installed on every host but enabled only on the hosts that follow automatically.
     is_managed_unit() {
       case "$1" in
-        dnf-automatic.timer|report-bans.timer|report-disk-usage.timer|\
+        dnf-automatic.timer|report-bans.timer|report-disk-usage.timer|report-certs.timer|\
         report-reboot-check.timer|host-sync.timer|docker-prune.timer|logrotate.timer) return 0 ;;
         *) return 1 ;;
       esac

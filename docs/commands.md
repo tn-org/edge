@@ -91,7 +91,8 @@ installed by `make host-apply`; enable it once per host with
 
 - `host-apply` runs the `scripts/setup-*.sh` steps in turn: first the swapfile with its
   boot unit and its swappiness (`setup-swap.sh`), then log rotation, OS auto-updates, the
-  blocking report, the image cleanup, the disk usage record, the certificate report, host
+  pending reboot check, the blocking report, the image cleanup, the disk usage record, the
+  certificate report, host
   sync and the auto-follow unit, and it ends with one host sync run. The whole run is
   safe to repeat, and only one runs at a time: a second `host-apply` waits up to 10
   minutes for the first, then fails without changing anything. A running host picks up a

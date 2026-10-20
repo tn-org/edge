@@ -98,6 +98,7 @@ esac
 for step in \
   setup-logs \
   setup-auto-patch \
+  setup-reboot-check \
   setup-bans \
   setup-docker-prune \
   setup-disk-usage \
