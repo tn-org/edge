@@ -140,16 +140,16 @@ console container are listed by the console repo instead, and the combined live 
 visible in the console under scheduled tasks. Names do not spell out "daily" or "weekly",
 since the interval column already says so.
 
-| Time         | Name                                                         | Runner  | Configured by                                     | Result                     |
-| ------------ | ------------------------------------------------------------ | ------- | ------------------------------------------------- | -------------------------- |
-| Daily 04:00  | OS security auto-update                                      | systemd | dnf-automatic.timer (setup-auto-patch.sh)         | Mail on failure            |
-| Daily 05:00  | edge update (git follow, compose apply; disabled by default) | systemd | edge-update.timer (setup-update.sh)               | Mail on failure            |
-| Daily 08:00  | Abuse blocking record                                        | systemd | report-bans.timer (setup-bans.sh)                 | Mail on failure            |
-| Daily 08:15  | Certificate expiry report (warns under 14 days left)         | systemd | report-certs.timer (setup-certs.sh)               | Mail on failure / warning  |
-| Daily 08:20  | Pending reboot check (repeats daily while a reboot is due)   | systemd | report-reboot-check.timer (setup-reboot-check.sh) | Mail on the days it is due |
-| Daily 08:30  | Disk usage per directory                                     | systemd | report-disk-usage.timer (setup-disk-usage.sh)     | Mail on failure            |
-| Every 5 min  | Host state snapshots and operation execution                 | systemd | host-sync.timer (setup-host-sync.sh)              | Mail on failure            |
-| Sunday 06:00 | Remove unused docker images                                  | systemd | docker-prune.timer (setup-docker-prune.sh)        | Mail on failure            |
+| Time         | Name                                                                                          | Runner  | Configured by                                     | Result                     |
+| ------------ | --------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------- | -------------------------- |
+| Daily 04:00  | OS security auto-update                                                                       | systemd | dnf-automatic.timer (setup-auto-patch.sh)         | Mail on failure            |
+| Daily 05:00  | edge update (git follow, compose apply; disabled by default)                                  | systemd | edge-update.timer (setup-update.sh)               | Mail on failure            |
+| Daily 08:00  | Abuse blocking record                                                                         | systemd | report-bans.timer (setup-bans.sh)                 | Mail on failure            |
+| Daily 08:15  | Certificate expiry report (warns under 14 days left)                                          | systemd | report-certs.timer (setup-certs.sh)               | Mail on failure / warning  |
+| Daily 08:20  | Pending reboot check (repeats daily while a reboot is due)                                    | systemd | report-reboot-check.timer (setup-reboot-check.sh) | Mail on the days it is due |
+| Daily 08:30  | Disk usage per directory + routine "Host daily report" (the host's heartbeat for the console) | systemd | report-disk-usage.timer (setup-disk-usage.sh)     | Mail on failure            |
+| Every 5 min  | Host state snapshots and operation execution                                                  | systemd | host-sync.timer (setup-host-sync.sh)              | Mail on failure            |
+| Sunday 06:00 | Remove unused docker images                                                                   | systemd | docker-prune.timer (setup-docker-prune.sh)        | Mail on failure            |
 
 `host-sync` runs `scripts/report.sh host-sync`: it rewrites the snapshots under
 `sync/state/` (blocking state, timers, pending reboot, host facts, and the memory, swap,

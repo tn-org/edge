@@ -8,7 +8,7 @@
 #   report.sh certs       # days left per certificate; warn when any is under 14 days
 #   report.sh os          # read the dnf-automatic body on stdin, notify if anything was applied
 #   report.sh bans        # record a summary of blocking status as a notification
-#   report.sh disk-usage  # write directory sizes and large files in / to sync/state (no notification)
+#   report.sh disk-usage  # write directory sizes and large files in / to sync/state, then send the daily host heartbeat
 #   report.sh bans-sync   # write blocking state and run the queued IP operations (no notification)
 #   report.sh timers      # write systemd timer state and run the queued operations (no notification)
 #   report.sh reboot-sync # write reboot state and apply the scheduled reboots (no notification)
@@ -226,8 +226,9 @@ PY
     ;;
   disk-usage)
     # The ops console runs in a container, so du there cannot see the host's
-    # /var/lib/docker and similar. Measure on the host and write the record; there is
-    # no notification, this is material for tracing growth on screen later.
+    # /var/lib/docker and similar. Measure on the host and write the record: material for
+    # tracing growth on screen later. The only event it sends is the routine daily heartbeat
+    # at the end (see there).
     # It walks the whole filesystem and takes tens of seconds, hence a daily timer.
     # The measurement is passed through a temporary file: the python program itself is fed
     # on stdin as a heredoc, so a pipe into the same stdin could not be read.
@@ -255,7 +256,7 @@ PY
       -exec du -B1 {} + 2>/dev/null >> "$DU_FILE"
 
     sync_prepare
-    python3 - "$SYNC_STATE_DIR/disk-usage.json.tmp" "$DU_FILE" "$MIN_ENTRY_MIB" <<'PY' || exit 1
+    summary="$(python3 - "$SYNC_STATE_DIR/disk-usage.json.tmp" "$DU_FILE" "$MIN_ENTRY_MIB" <<'PY'
 import datetime, json, sys
 
 dest, du_file = sys.argv[1], sys.argv[2]
@@ -296,8 +297,16 @@ with open(dest, "w", encoding="utf-8") as f:
         "entries": entries,
     }, f)
 print(f"Recorded disk usage per directory and of large files directly under / ({len(entries)} entries)")
+print("Largest: " + ", ".join(f"{e['name']} {e['bytes'] / 2**30:.1f} GiB" for e in entries[:5]))
 PY
+)" || exit 1
     sync_commit_state disk-usage.json
+    # Every host runs this report daily, with or without CrowdSec, so it doubles as the host's
+    # daily heartbeat. The console marks the host's notification route dead after 25 hours
+    # without an event, and the blocking report, the only daily event before this, is not
+    # installed on hosts without CrowdSec (origin-ca or EDGE_CROWDSEC=off), which left their
+    # route red for good. Routine: excluded from lists and unread badges, counted as alive.
+    printf '%s\n' "$summary" | send "Host daily report" routine
     ;;
   bans-sync)
     # CrowdSec lives inside a container, so write its state out as a snapshot the console

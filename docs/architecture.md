@@ -50,7 +50,12 @@ The host layer does not call the ops console at all. The contract is one directo
 `sync/` at the repo root, which the console mounts from its own compose file:
 
 - `sync/state/` is written by `scripts/notify.sh` and `scripts/report.sh` and read by the
-  console. `events/YYYY-MM-DD.ndjson` gets one JSON object per notification, appended;
+  console. `events/YYYY-MM-DD.ndjson` gets one JSON object per notification, appended.
+  One of them is routine and arrives every day from every host: the "Host daily report"
+  that `report.sh disk-usage` sends after its measurement (08:30). The console treats a
+  host route with no event for 25 hours as dead, and this report is what keeps it alive on
+  hosts that run no CrowdSec (the blocking report, the other routine event, is not
+  installed there);
   `bans.json`, `timers.json`, `reboot.json`, `disk-usage.json`, `host.json` and
   `metrics.json` are full snapshots, rewritten through a `.tmp` file so a reader never
   sees half of one.
