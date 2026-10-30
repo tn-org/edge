@@ -148,7 +148,20 @@ PY
     body="$(cat)"
     # Nothing applied ("No updates available." and similar) means no notification.
     if printf '%s\n' "$body" | grep -qiE 'upgrad|install'; then
-      printf '%s\n' "$body" | send "OS security updates applied"
+      # The body only lists packages. The move to a newer release happens before it, in the
+      # ExecStartPre of dnf-automatic.service, so name the release the host is on now.
+      # rpm prints "package ... is not installed" on stdout when the query fails, so only a
+      # successful query counts, and only its first line in case two versions are listed.
+      release=""
+      if out="$(rpm -q --qf '%{VERSION}\n' system-release 2>/dev/null)"; then
+        release="${out%%$'\n'*}"
+      fi
+      {
+        if [ -n "$release" ]; then
+          printf 'Release: %s\n\n' "$release"
+        fi
+        printf '%s\n' "$body"
+      } | send "OS updates applied"
     else
       echo "No OS updates applied (notification skipped)"
     fi
@@ -1125,7 +1138,7 @@ PY
     exit "$rc"
     ;;
   reboot-check)
-    # dnf-automatic applies security updates automatically but never reboots.
+    # dnf-automatic applies OS updates automatically but never reboots.
     # A kernel update does not take effect until a reboot, so keep warning every day while
     # one is outstanding. Without the reminder, nobody notices the machine is still running
     # a vulnerable kernel.

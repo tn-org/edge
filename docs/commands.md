@@ -142,7 +142,7 @@ since the interval column already says so.
 
 | Time         | Name                                                                                          | Runner  | Configured by                                     | Result                     |
 | ------------ | --------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------- | -------------------------- |
-| Daily 04:00  | OS security auto-update                                                                       | systemd | dnf-automatic.timer (setup-auto-patch.sh)         | Mail on failure            |
+| Daily 04:05  | OS auto-update (all updates of the newest release, no reboot)                                 | systemd | dnf-automatic.timer (setup-auto-patch.sh)         | Mail on failure / applied  |
 | Daily 05:00  | edge update (git follow, compose apply; disabled by default)                                  | systemd | edge-update.timer (setup-update.sh)               | Mail on failure            |
 | Daily 08:00  | Abuse blocking record                                                                         | systemd | report-bans.timer (setup-bans.sh)                 | Mail on failure            |
 | Daily 08:15  | Certificate expiry report (warns under 14 days left)                                          | systemd | report-certs.timer (setup-certs.sh)               | Mail on failure / warning  |
