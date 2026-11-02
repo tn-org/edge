@@ -64,16 +64,26 @@ crowdsec_enabled() {
   [ "${EDGE_CROWDSEC:-auto}" != "off" ] && [ "${EDGE_TLS_MODE:-letsencrypt}" != "origin-ca" ]
 }
 
-# Why CrowdSec does not run on this host, as one phrase for messages
-# ("CrowdSec does not run on this host ($(crowdsec_off_reason))"). Only meaningful when
-# crowdsec_enabled is false. EDGE_CROWDSEC=off is named first: it is the explicit choice,
-# and it stays the reason even on an origin-ca host.
-crowdsec_off_reason() {
+# Why CrowdSec does not run on this host, as one fixed word for files the console reads
+# (host.json): "off" or "origin-ca". Only meaningful when crowdsec_enabled is false.
+# EDGE_CROWDSEC=off is named first: it is the explicit choice, and it stays the reason even
+# on an origin-ca host.
+crowdsec_off_code() {
   if [ "${EDGE_CROWDSEC:-auto}" = "off" ]; then
-    printf '%s' "EDGE_CROWDSEC=off"
+    printf '%s' "off"
   else
-    printf '%s' "EDGE_TLS_MODE=origin-ca, behind Cloudflare"
+    printf '%s' "origin-ca"
   fi
+}
+
+# The same reason as one phrase for messages
+# ("CrowdSec does not run on this host ($(crowdsec_off_reason))"). Built on
+# crowdsec_off_code, so the two can never name different reasons.
+crowdsec_off_reason() {
+  case "$(crowdsec_off_code)" in
+    off) printf '%s' "EDGE_CROWDSEC=off" ;;
+    origin-ca) printf '%s' "EDGE_TLS_MODE=origin-ca, behind Cloudflare" ;;
+  esac
 }
 
 # Extra arguments for `docker compose up` (empty when CrowdSec runs, so the command is

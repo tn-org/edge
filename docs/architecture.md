@@ -59,9 +59,13 @@ The host layer does not call the ops console at all. The contract is one directo
   `bans.json`, `timers.json`, `reboot.json`, `disk-usage.json`, `host.json` and
   `metrics.json` are full snapshots, rewritten through a `.tmp` file so a reader never
   sees half of one.
-  `host.json` carries the facts the console cannot derive on its own (currently the
-  dashboard FQDN) and is only rewritten when its content changed, so the console can skip
-  a `generatedAt` it has already taken in. `metrics.json` is the opposite: a reading of
+  `host.json` carries the facts the console cannot derive on its own: `dashboard` (the
+  dashboard FQDN as `{"host": …}`, or null) and `abuseBlocking` (`{"runs": true}` when
+  CrowdSec runs, otherwise `{"runs": false, "reason": "off"}` for `EDGE_CROWDSEC=off` or
+  `"origin-ca"` for a host behind Cloudflare, `off` winning when both apply). The console
+  expects the daily blocking report only from a host whose `runs` is true. The file is
+  only rewritten when its content changed, so the console can skip a `generatedAt` it has
+  already taken in. `metrics.json` is the opposite: a reading of
   memory, swap, load and CPU for the host and for each running container, rewritten with
   a new `generatedAt` on every `host-sync` run. Its swap counters (`pswpin` / `pswpout`)
   are totals since boot, so the console takes the difference between two readings, and

@@ -789,25 +789,37 @@ PY
     fi
     ;;
   host-info)
-    # Facts about the host itself that the console cannot work out from its own side.
-    # Currently one: the FQDN the Traefik dashboard is published on, which lives in
-    # DASHBOARD_HOST in .env and is empty on a host with no dashboard route.
+    # Facts about the host itself that the console cannot work out from its own side:
+    #   dashboard      the FQDN the Traefik dashboard is published on, which lives in
+    #                  DASHBOARD_HOST in .env; null on a host with no dashboard route
+    #   abuseBlocking  whether CrowdSec blocks abusive clients here: {"runs": true}, or
+    #                  {"runs": false, "reason": "off" | "origin-ca"}. A host without it
+    #                  sends no "Abuse blocking daily report" by design, and this is how the
+    #                  console's daily report knows not to wait for one
     #
     # Written like every other snapshot: the whole file through a .tmp and a rename, so a
     # reader never sees half of one. Unchanged content is left alone instead of rewritten
     # with a new timestamp — the console skips a file whose generatedAt it has already
     # taken in, and rewriting it every five minutes would defeat that.
     #
-    # Only the one key is read out of .env (same as scripts/mode-lib.sh): this runs as root
-    # from a timer and has no business holding the LAPI key or the dashboard password.
+    # Only DASHBOARD_HOST is read out of .env here; the modes were read at the top by
+    # edge_load_modes in the same way. This runs as root from a timer and has no business
+    # holding the LAPI key or the dashboard password.
     sync_prepare
     dashboard_host="$(sed -n 's/^DASHBOARD_HOST=//p' "$ROOT_DIR/.env" 2>/dev/null \
       | head -1 | tr -d "\"' ")"
+    # Empty when CrowdSec runs, otherwise why not. Decided from the modes in .env by the
+    # same rule as every other part of edge (scripts/mode-lib.sh), so host.json says what
+    # the bans report, bans-sync and the compose arguments do. Like them it follows .env:
+    # a mode edited in .env but not yet applied with make update is reported as if applied.
+    blocking_off=""
+    crowdsec_enabled || blocking_off="$(crowdsec_off_code)"
 
-    python3 - "$SYNC_STATE_DIR/host.json.tmp" "$SYNC_STATE_DIR/host.json" "$dashboard_host" <<'PY'
+    python3 - "$SYNC_STATE_DIR/host.json.tmp" "$SYNC_STATE_DIR/host.json" "$dashboard_host" \
+      "$blocking_off" <<'PY'
 import datetime, json, sys
 
-dest, current, raw = sys.argv[1:4]
+dest, current, raw, blocking_off = sys.argv[1:5]
 
 # The contract is a bare host name: no scheme, no port, no path. .env is meant to hold
 # exactly that, so this only trims what a hand-edited value may have picked up.
@@ -818,24 +830,38 @@ host = host.split("/", 1)[0]
 host = host.split(":", 1)[0]
 dashboard = {"host": host} if host else None
 
-# Same shape as before means nothing to publish: keep the file, and with it its
-# generatedAt, exactly as it is.
+# "reason" is only there when it does not run, so a reader never sees a reason next to
+# runs: true.
+if blocking_off:
+    abuse_blocking = {"runs": False, "reason": blocking_off}
+else:
+    abuse_blocking = {"runs": True}
+
+summary = (f"dashboard: {host or 'none'}; abuse blocking: "
+           + ("runs" if abuse_blocking["runs"] else f"does not run ({blocking_off})"))
+
+# Same content as before means nothing to publish: keep the file, and with it its
+# generatedAt, exactly as it is. A file written before abuseBlocking existed has no such
+# key, so it counts as changed and is rewritten once.
 try:
     with open(current, encoding="utf-8") as f:
         existing = json.load(f)
 except (OSError, ValueError):
     existing = None
-if isinstance(existing, dict) and existing.get("dashboard") == dashboard:
-    print("Host facts unchanged")
+if (isinstance(existing, dict)
+        and existing.get("dashboard") == dashboard
+        and existing.get("abuseBlocking") == abuse_blocking):
+    print(f"Host facts unchanged ({summary})")
     raise SystemExit(3)
 
 with open(dest, "w", encoding="utf-8") as f:
     json.dump({
         "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "dashboard": dashboard,
+        "abuseBlocking": abuse_blocking,
     }, f)
 
-print(f"Wrote host facts (dashboard: {host or 'none'})")
+print(f"Wrote host facts ({summary})")
 PY
     rc=$?
     if [ "$rc" -eq 0 ]; then

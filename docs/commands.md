@@ -168,7 +168,8 @@ this host from the outside, and this repo contains no CI workflows.
 
 On a host without CrowdSec (origin-ca behind Cloudflare, or `EDGE_CROWDSEC=off`) the
 blocking record is not in the list at all: `make host-apply` does not install
-`report-bans.timer` and removes it if a previous mode left one behind.
+`report-bans.timer` and removes it if a previous mode left one behind. `host.json` records
+that (`abuseBlocking.runs` is false), so the console does not wait for the blocking report.
 
 Certificate renewal and persisting the block list are not on the list because they no
 longer need a timer: Traefik's ACME resolver renews certificates before they expire, and

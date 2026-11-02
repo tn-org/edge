@@ -320,7 +320,7 @@ sync/
  │  ├ timers.json                scheduled job state snapshot
  │  ├ reboot.json                pending-reboot state snapshot
  │  ├ disk-usage.json            usage per directory, plus large files directly under / (daily)
- │  ├ host.json                  facts about the host itself (the dashboard FQDN)
+ │  ├ host.json                  facts about the host itself (dashboard FQDN, whether blocking runs)
  │  └ metrics.json               memory, swap, load and CPU of the host and of each container
  └ ops/                      the console writes req-<id>.json, the host answers res-<id>.json
 ```

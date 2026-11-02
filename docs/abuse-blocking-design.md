@@ -105,6 +105,11 @@ What goes with it is stated rather than faked: `report-bans.timer` is not instal
 queued console requests with an error, so the console shows no blocking state for the
 host instead of an empty list.
 
+The host says so to the console as well: `report.sh host-info` writes
+`"abuseBlocking": {"runs": false, "reason": "off"}` (or `"origin-ca"`) into
+`sync/state/host.json`, and the console's Daily report then stops waiting for this host's
+"Abuse blocking daily report" instead of warning every morning that it has not arrived.
+
 ## Known gaps
 
 - **SSH brute force is not blocked.** The Traefik bouncer only sees HTTP. Adding the
