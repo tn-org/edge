@@ -79,7 +79,15 @@ The host layer does not call the ops console at all. The contract is one directo
   whole: a list means `docker stats` answered (an empty one, that no container is
   running), null means docker could not be used, and the host's figures are written
   either way. The rules for each figure are in the
-  `host-metrics` part of `scripts/report.sh`. The JSON shape of `bans.json` dates from a
+  `host-metrics` part of `scripts/report.sh`. `reboot.json` carries `required`
+  (`needs-restarting -r`) and `servicesToRestart`: the systemd units that
+  `needs-restarting -s` names as still running code an update has replaced, each once and
+  in name order. It is `[]` when there is none and null when they could not be checked
+  (`needs-restarting` is missing, failed or took over 30 seconds); a null does not fail the
+  run. The check walks every process, so its answer, a failed one included, is kept in
+  `.state/services-to-restart` and taken again only when that is 30 minutes old or older
+  than the current boot; until then the list can be up to 30 minutes behind. edge restarts
+  no service; the list is only shown. The JSON shape of `bans.json` dates from a
   fail2ban-era implementation and did not change: what used to be a fail2ban "jail" is a
   CrowdSec scenario name.
 - `sync/ops/` is the other direction. The console writes `req-<id>.json`

@@ -19,7 +19,8 @@ traefik/dynamic/generated-tls.yml
 # Allowlisted IPs and the CrowdSec whitelist built from them (operational state)
 crowdsec/generated/
 
-# Config hash used by deploy-host.sh, and the pending-reboot timestamp
+# Config hash used by deploy-host.sh, the pending-reboot timestamp, and the last list of
+# services to restart (report.sh reboot-sync)
 .state/
 
 # The file channel to the ops console (state snapshots, events, operation requests)

@@ -11,7 +11,7 @@
 #   report.sh disk-usage  # write directory sizes and large files in / to sync/state, then send the daily host heartbeat
 #   report.sh bans-sync   # write blocking state and run the queued IP operations (no notification)
 #   report.sh timers      # write systemd timer state and run the queued operations (no notification)
-#   report.sh reboot-sync # write reboot state and apply the scheduled reboots (no notification)
+#   report.sh reboot-sync # write reboot state and services to restart, apply the scheduled reboots (no notification)
 #   report.sh host-info   # write the facts about this host the console cannot derive itself
 #   report.sh host-metrics # write memory, swap, load and CPU of the host and of each container
 #   report.sh host-sync   # run bans-sync, timers, reboot-sync, host-info and host-metrics together (host-sync.timer)
@@ -44,6 +44,17 @@ send() {
   # Display-only mode (make bans and friends): print to stdout, record nothing.
   [ "${NOTIFY_DISABLE:-}" = 1 ] && return 0
   sync_append_event info "$title" "$body" "$routine"
+}
+
+# Make sure .state/ exists. It holds the small files kept between runs: the pending-reboot
+# timestamp and the services to restart from here, the config hash from deploy-host.sh.
+# The timers run this script as root while make update runs deploy-host.sh as the deploy
+# user, so a root run must not leave the directory root-owned, or that user could no longer
+# write its config hash there. Same idea as sync_fix_ownership in sync-lib.sh.
+state_dir_prepare() {
+  mkdir -p "$ROOT_DIR/.state" || return 1
+  [ "$(id -u)" = 0 ] || return 0
+  chown --reference="$ROOT_DIR" "$ROOT_DIR/.state" 2>/dev/null || true
 }
 
 case "${1:-}" in
@@ -699,8 +710,12 @@ PY
     # Write the pending-reboot state for the console and carry out the reboots scheduled
     # from its screens. The console runs in a container and cannot reboot the host; this is
     # the only place that can.
-    REQ_FILE="$(mktemp)"
-    trap 'rm -f "$REQ_FILE"' EXIT
+    #
+    # The state also names the services that still run code an update has replaced
+    # (servicesToRestart, see services_to_restart below). That list is only shown: nothing
+    # here restarts a service.
+    REQ_FILE="$(mktemp)"; SVC_ERR_FILE="$(mktemp)"
+    trap 'rm -f "$REQ_FILE" "$SVC_ERR_FILE"' EXIT
 
     # Is a reboot pending because of a kernel or similar update?
     reboot_required() {
@@ -722,11 +737,103 @@ PY
       date -u -d "$(uptime -s)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
     }
 
+    # The systemd services that still run code an update has replaced. dnf-automatic only
+    # installs packages. Some packages restart their own service when they are updated
+    # (openssh does); the others do not, so a daemon such as containerd keeps the old
+    # program in memory until it is restarted or the host reboots.
+    # Prints the unit names, one per line (nothing when there is none), and succeeds when the
+    # answer is known. Fails, with the reason on stderr, when it is not: needs-restarting is
+    # missing, exited non-zero or ran into the time limit, now or at the last check within
+    # the past 30 minutes.
+    #
+    # needs-restarting -s reads the memory maps of every process, which is too heavy for
+    # every five-minute pass. The last answer is kept in .state/services-to-restart (one unit
+    # per line, an empty file for none, the single line "unknown" for a check that failed)
+    # and asked for again only when that file is missing, over 30 minutes old, or older than
+    # the current boot: a list taken before a reboot names processes that are gone. Until
+    # then the list can be up to 30 minutes behind in both directions: a service restarted
+    # by hand stays on it, and one an update has just replaced is not on it yet. A failed
+    # check is kept the same way, so one that keeps failing or running into the time limit
+    # is tried once in 30 minutes and not on every pass.
+    services_to_restart() {
+      local cache="$ROOT_DIR/.state/services-to-restart" now mtime boot age kept out rc list tmp
+      if [ -f "$cache" ]; then
+        now="$(date +%s)"
+        mtime="$(stat -c %Y "$cache" 2>/dev/null)"
+        boot="$(uptime -s 2>/dev/null)"
+        # date -d "" reads as midnight today, so only convert a time uptime gave
+        [ -n "$boot" ] && boot="$(date -d "$boot" +%s 2>/dev/null)"
+        # A time that cannot be read counts as stale. So does a file dated in the future: one
+        # written while the clock ran ahead would otherwise pass as fresh until the clock
+        # caught up with it.
+        if [ -n "$mtime" ] && [ -n "$boot" ] && [ "$mtime" -ge "$boot" ]; then
+          age=$(( now - mtime ))
+          # Read whole before anything is printed, so a failed read cannot leave half a list
+          # in front of a fresh one
+          if [ "$age" -ge 0 ] && [ "$age" -lt 1800 ] && kept="$(cat "$cache")"; then
+            if [ "$kept" = "unknown" ]; then
+              echo "The last check for services to restart failed; it is tried again 30 minutes after that" >&2
+              return 1
+            fi
+            [ -z "$kept" ] || printf '%s\n' "$kept"
+            return 0
+          fi
+        fi
+      fi
+
+      if ! command -v needs-restarting >/dev/null 2>&1; then
+        echo "needs-restarting is missing (dnf-utils is not installed); services to restart are unknown" >&2
+        return 1
+      fi
+      # stderr goes to a file: a successful run prints harmless lines there for processes
+      # that ended or could not be read ("Failed to read PID 1234's smaps."), and only a
+      # failed run's stderr is worth showing.
+      # Capped at 30 seconds (timeout exits 124, handled as a failed check): the reboot
+      # operations and the rest of host-sync come after this, and host-sync.service allows
+      # the whole pass 180 seconds. A list that is only shown must not be able to hold them up.
+      out="$(sudo timeout 30 needs-restarting -s 2>"$SVC_ERR_FILE")"; rc=$?
+      if [ "$rc" -ne 0 ]; then
+        echo "needs-restarting -s failed (exit status $rc); services to restart are unknown" >&2
+        tail -n 5 "$SVC_ERR_FILE" >&2
+        list="unknown"
+      else
+        # Only the lines shaped like a service unit name, so anything else it may print (a
+        # heading, a note) stays out of the list. The backslash is for the names systemd
+        # escapes (an instance such as foo@dev-disk-by\x2duuid.service). "unknown" can never
+        # be one of them: it does not end in .service.
+        list="$(printf '%s\n' "$out" | grep -E '^[A-Za-z0-9@:._\\-]+\.service$')"
+      fi
+
+      # Through a temporary file and a rename like the snapshots, so a run never reads half a
+      # file; the name is unique so two runs at once cannot write into each other's. A file
+      # that cannot be written only means the next pass asks again.
+      state_dir_prepare
+      if tmp="$(mktemp "$cache.XXXXXX" 2>/dev/null)" \
+          && { [ -z "$list" ] || printf '%s\n' "$list"; } > "$tmp" \
+          && chmod 644 "$tmp" && mv "$tmp" "$cache"; then
+        :
+      else
+        [ -z "$tmp" ] || rm -f "$tmp"
+        echo "Could not keep the services to restart in $cache; they are asked for again on the next run" >&2
+      fi
+
+      [ "$rc" -eq 0 ] || return 1
+      [ -z "$list" ] || printf '%s\n' "$list"
+    }
+
+    # $5 = 1 when the services to restart are known, 0 when they are not; $6 = those
+    # services, one per line. The flag is separate so that "unknown" (null) can never be
+    # read as "none" ([]).
     write_reboot() {
-      python3 - "$SYNC_STATE_DIR/reboot.json.tmp" "$1" "$2" "$3" "$4" <<'PY'
+      python3 - "$SYNC_STATE_DIR/reboot.json.tmp" "$1" "$2" "$3" "$4" "$5" "$6" <<'PY'
 import datetime, json, sys
 
-dest, required, since, scheduled, booted = sys.argv[1:6]
+dest, required, since, scheduled, booted, services_known, services = sys.argv[1:8]
+
+# Every unit once, in name order; null when the list could not be read this run, which the
+# console shows as not checked rather than as nothing to restart
+services_to_restart = (sorted(set(filter(None, services.splitlines())))
+                       if services_known == "1" else None)
 
 with open(dest, "w", encoding="utf-8") as f:
     json.dump({
@@ -735,9 +842,14 @@ with open(dest, "w", encoding="utf-8") as f:
         "requiredSince": since or None,
         "scheduledFor": scheduled or None,
         "bootedAt": booted or None,
+        "servicesToRestart": services_to_restart,
     }, f)
 
-print("Wrote reboot state")
+if services_to_restart is None:
+    restart_note = "unknown"
+else:
+    restart_note = ", ".join(services_to_restart) or "none"
+print(f"Wrote reboot state (services to restart: {restart_note})")
 PY
     }
 
@@ -760,15 +872,24 @@ PY
     required=0; since=""
     if reboot_required; then
       required=1
-      mkdir -p "$(dirname "$STATE_FILE")"
+      state_dir_prepare
       [ -f "$STATE_FILE" ] || date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_FILE"
       since="$(cat "$STATE_FILE")"
     else
       rm -f "$STATE_FILE"
     fi
 
+    # Asked once and handed to both writes below; the reboot operations in between do not
+    # change it.
+    # An unknown list does not fail reboot-sync. It is only shown, and a failure here would
+    # fail host-sync as a whole and raise a failure notice every five minutes. The reboot
+    # operations go on as usual, and the console shows null as not checked.
+    services_known=1
+    services="$(services_to_restart)" || { services_known=0; services=""; }
+
     sync_prepare
-    write_reboot "$required" "$since" "$(scheduled_at)" "$(booted_at)" || exit 1
+    write_reboot "$required" "$since" "$(scheduled_at)" "$(booted_at)" \
+      "$services_known" "$services" || exit 1
     sync_commit_state reboot.json
 
     sync_pending_ops reboot scheduledFor > "$REQ_FILE"
@@ -784,7 +905,8 @@ PY
         fi
       done < "$REQ_FILE"
 
-      write_reboot "$required" "$since" "$(scheduled_at)" "$(booted_at)" || exit 1
+      write_reboot "$required" "$since" "$(scheduled_at)" "$(booted_at)" \
+        "$services_known" "$services" || exit 1
       sync_commit_state reboot.json
     fi
     ;;
@@ -1183,7 +1305,7 @@ PY
       exit 0
     fi
 
-    mkdir -p "$(dirname "$STATE_FILE")"
+    state_dir_prepare
     [ -f "$STATE_FILE" ] || date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_FILE"
     since="$(cat "$STATE_FILE")"
     days=$(( ( $(date -u +%s) - $(date -u -d "$since" +%s) ) / 86400 ))

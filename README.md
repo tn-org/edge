@@ -318,7 +318,7 @@ sync/
  │  ├ events/YYYY-MM-DD.ndjson   one notification per line, appended (dropped after 14 days)
  │  ├ bans.json                  blocking state snapshot
  │  ├ timers.json                scheduled job state snapshot
- │  ├ reboot.json                pending-reboot state snapshot
+ │  ├ reboot.json                pending-reboot state and services to restart
  │  ├ disk-usage.json            usage per directory, plus large files directly under / (daily)
  │  ├ host.json                  facts about the host itself (dashboard FQDN, whether blocking runs)
  │  └ metrics.json               memory, swap, load and CPU of the host and of each container
@@ -339,6 +339,18 @@ memory runs short, which is when those figures matter most. A list means docker 
 so an empty one means that no container is running. It names every running container and
 its compose project and service, the applications' too; those names are read on the host
 at run time and written only into this file.
+
+`reboot.json` says whether the host needs a reboot (`needs-restarting -r`) and, in
+`servicesToRestart`, which systemd services still run code an update has replaced
+(`needs-restarting -s`): dnf-automatic only installs updates, and not every package
+restarts its own service when it is updated. It is a list of unit names such as
+`containerd.service`, each once and in name order, `[]` when there is none, and null when
+the check could not be made (`needs-restarting` is missing, failed or took over 30
+seconds), which does not fail the run. Checking walks every process, so the answer, a
+failed one included, is kept in `.state/services-to-restart` and asked for again only
+after 30 minutes or a reboot. Until then the list can be behind in both directions: a
+service restarted by hand stays on it, and one an update has just replaced is not on it
+yet. edge restarts no service; the list is only shown.
 
 Operation requests (unblock an IP, run a timer, schedule a reboot) are picked up by the
 same run; a request whose `res-` file already exists is never run twice, and the console
