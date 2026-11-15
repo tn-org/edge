@@ -90,11 +90,29 @@ make update
 ```
 
 That runs `git fetch`, `git reset --hard origin/main` and `scripts/deploy-host.sh`
-(render config, `compose up -d`, and recreate containers only if the static config
+(render config, `compose up -d`, and restart the containers if the static config
 changed). Use `DEPLOY_BRANCH=<branch> make update` to follow a different branch.
 
 Changes under `/etc` and to systemd units are not picked up by `make update`. Run
 `make host-apply` afterwards for those.
+
+### Image versions
+
+The Traefik version is pinned in `docker-compose.yml` (`traefik:v3.7.19`). A new release
+reaches a host as a commit that changes that line: `make update` pulls the tag the host
+does not have yet, recreates the container (a few seconds without the proxy), checks
+every hostname, and returns to the previous commit, and so to the previous version, if
+they stop answering. Dependabot opens a pull request when a newer version exists
+(`.github/dependabot.yml`). Read Traefik's migration guide for the versions in between
+before merging: merging is what sends the version to every host that follows `main`.
+
+CrowdSec still uses the moving `latest` tag. A host pulls it only when it first creates
+the container, so each host keeps the build it started with until someone runs
+`docker compose pull crowdsec` and `make up` there.
+
+The shared database is never changed by `make update`: recreating it restarts PostgreSQL
+under every application on the host. `make db-update` does that on request (see "Shared
+database").
 
 ### Following automatically (optional)
 
@@ -400,6 +418,11 @@ only needed while the role does not exist yet. The application connects with
 `DB_HOST=edge-postgres` on the shared network (or `127.0.0.1:$POSTGRES_PORT` from the
 host — the port is published on loopback only). Data lives in the `pgdata` named
 volume.
+
+The image tag stays on one major version (`postgres:17-alpine`), and nothing pulls it on
+its own. To take a minor release, run `make db-update`: it pulls the image and recreates
+the container on the same volume, which restarts the database under every application
+on the host for a few seconds. Pick a quiet moment.
 
 ## Hosts behind the Cloudflare proxy (optional modes)
 

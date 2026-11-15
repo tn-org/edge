@@ -32,9 +32,17 @@ services:
   # scripts/render-config.sh, which substitutes .env values into traefik/traefik.yml.
   # Traefik accepts its static config from exactly one of file, environment or arguments,
   # and does not expand environment variables inside the file.
+  #
+  # The version is pinned to the patch release. A moving tag (traefik:v3) only moves on a
+  # host when something pulls it, and nothing here does: in November 2026 three hosts were
+  # still on builds from August and September when a security release came out. With a
+  # pinned version a new release arrives as a commit that changes this line. `make update`
+  # then pulls the tag the host does not have yet, recreates the container, checks every
+  # hostname, and goes back to the previous commit (and with it the previous version) if
+  # they stop answering. Dependabot proposes the change (.github/dependabot.yml).
   # ---------------------------------------------------------------------------
   traefik:
-    image: traefik:v3
+    image: traefik:v3.7.19
     container_name: edge-traefik
     ports:
       - "80:80"

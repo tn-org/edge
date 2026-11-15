@@ -43,7 +43,7 @@ GUARD_SERVER = @if [ "$(APP_ENV)" = "local" ]; then echo "make $@ is server-only
 
 .PHONY: help up down restart ps logs render \
 	update verify bans host-apply ban docker-prune env setup \
-	db-up db-down db-create
+	db-up db-down db-create db-update
 
 help: # (prints the command list; hidden from the list itself)
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -102,10 +102,21 @@ db-down: ## Stop the shared PostgreSQL instance (data stays in the volume) [both
 db-create: ## Create a database and its owner role, NAME= [ROLE= PASSWORD=] (idempotent) [both]
 	@$(SUDO)$(SCRIPTS)/db-create.sh '$(NAME)' '$(ROLE)' '$(PASSWORD)'
 
+# The database image is not pinned to a minor release, and nothing pulls it on its own:
+# recreating the database restarts PostgreSQL under every application on the host, so it
+# only happens when someone asks for it. The tag stays on one major version
+# (postgres:17-alpine), so this brings minor releases only and the data in the volume is
+# used as it is.
+db-update: ## Pull the newer PostgreSQL image and recreate the shared database (restarts it for every application) [both]
+	$(COMPOSE) --profile db pull postgres
+	@$(MAKE) --no-print-directory db-up
+
 ##@ Updates
 
 # The only update path runs on the host; this repo has no mechanism to push itself out.
 # Force git onto origin/$(DEPLOY_BRANCH), then run the new version of deploy-host.sh.
+# A new Traefik version arrives the same way, as a commit that changes the pinned version
+# in docker-compose.yml (the database image is db-update's).
 # Hosts that should follow automatically enable edge-update.timer (see README).
 update: GUIDE = Run on the server: cd /app/edge && make update
 update: ## Follow origin and apply the host layer (default main; override with DEPLOY_BRANCH=) [server]

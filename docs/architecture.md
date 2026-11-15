@@ -145,7 +145,8 @@ proxy that serves the wrong thing.
 only update path runs on the host: `make update` does `git fetch`, then
 `git reset --hard origin/$DEPLOY_BRANCH`, then `scripts/deploy-host.sh`. That script
 renders the config and runs `compose up -d`. Routing and middlewares are watched by
-Traefik, so no restart is needed for them; containers are recreated only when the static
+Traefik, so no restart is needed for them. A container is recreated when its definition
+changed (a new pinned Traefik version arrives this way) and restarted when the static
 config (`traefik/traefik.yml`, `crowdsec/`) changed.
 
 Changes under `/etc` and to systemd units require `make host-apply`, run by hand. The

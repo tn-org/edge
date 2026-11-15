@@ -8,13 +8,16 @@ cd "$(dirname "$0")/.."
 #
 # Order:
 #   1. Substitute .env values into the config files (traefik/generated, crowdsec/generated)
-#   2. Bring compose in line with the current definition. Containers for services that no
-#      longer exist in the compose file are cleared with --remove-orphans.
-#   3. Recreate containers only if the static config changed.
+#   2. Bring compose in line with the current definition. A service whose definition
+#      changed is recreated. That is how a new Traefik version arrives: docker-compose.yml
+#      pins the version, and compose pulls a tag the host does not have yet. Containers for
+#      services that no longer exist in the compose file are cleared with --remove-orphans.
+#   3. Restart the containers if the static config changed, except one that step 2 has
+#      just recreated (it read the new config when it started).
 #
 # Routing (domains and upstreams) lives in the applications' compose labels and Traefik
 # picks it up from docker events. Middlewares and TLS settings (traefik/dynamic/) are
-# watched by Traefik as well, so this script has nothing to do for either. A recreate is
+# watched by Traefik as well, so this script has nothing to do for either. A restart is
 # only needed after a change to Traefik's static config or the CrowdSec config.
 
 # The host modes decide whether the CrowdSec container is part of the stack at all
@@ -23,7 +26,7 @@ edge_load_modes . || exit 1
 
 STATE_FILE=".state/config-hash"
 
-# Only look at config that requires a recreate. Dynamic config and the allowlist are
+# Only look at config that requires a restart. Dynamic config and the allowlist are
 # watched or applied separately, so they are not included.
 config_hash() {
   cat traefik/generated/traefik.yml crowdsec/acquis.yaml crowdsec/config.yaml.local 2>/dev/null \
@@ -35,23 +38,40 @@ config_hash() {
 new_hash="$(config_hash)"
 old_hash="$(cat "$STATE_FILE" 2>/dev/null || true)"
 
+# The container of a stack service, as an ID. Empty when the container does not exist.
+container_id() {
+  sudo docker container inspect --format '{{.Id}}' "$1" 2>/dev/null || true
+}
+
+traefik_before="$(container_id edge-traefik)"
+crowdsec_before="$(container_id edge-crowdsec)"
+
 # Unquoted on purpose: edge_compose_up_args expands to nothing when CrowdSec runs
 sudo docker compose up -d --remove-orphans $(edge_compose_up_args)
 
-# With CrowdSec off there is no container to restart, and naming one that is not running
-# would fail the whole update
-restart_services="traefik"
-if crowdsec_enabled; then
-  restart_services="traefik crowdsec"
-fi
-
 if [ "$new_hash" != "$old_hash" ]; then
-  echo "Static config changed, recreating containers"
-  sudo docker compose restart $restart_services
+  # A container that `up -d` has just created or recreated (a new image version, say) read
+  # the new config when it started; restarting it would only take the proxy down a second
+  # time. With CrowdSec off there is no container to restart, and naming one that is not
+  # running would fail the whole update.
+  restart_services=""
+  if [ "$(container_id edge-traefik)" = "$traefik_before" ]; then
+    restart_services="traefik"
+  fi
+  if crowdsec_enabled && [ "$(container_id edge-crowdsec)" = "$crowdsec_before" ]; then
+    restart_services="${restart_services:+$restart_services }crowdsec"
+  fi
+  if [ -n "$restart_services" ]; then
+    echo "Static config changed, restarting: $restart_services"
+    # Unquoted on purpose: one or two service names
+    sudo docker compose restart $restart_services
+  else
+    echo "Static config changed; the containers were just recreated and already run on it"
+  fi
   mkdir -p "$(dirname "$STATE_FILE")"
   printf '%s' "$new_hash" > "$STATE_FILE"
 else
-  echo "Static config unchanged (no recreate)"
+  echo "Static config unchanged (no restart)"
 fi
 
 # ---- Verify, and roll back a bad update -------------------------------------

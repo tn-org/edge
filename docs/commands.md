@@ -46,6 +46,7 @@ timer-driven run never hangs.
 | `make db-up`     | Start the shared PostgreSQL instance only    | —                               | both    | manual                    |
 | `make db-down`   | Stop it (data stays in the `pgdata` volume)  | —                               | both    | manual                    |
 | `make db-create` | Create a database and its owner (idempotent) | `NAME=` `[ROLE=]` `[PASSWORD=]` | both    | manual, application setup |
+| `make db-update` | Pull the newer image and recreate it         | —                               | both    | manual                    |
 
 - The instance is one per host; applications share it and differ only by database and
   role (see "Shared database" in the README).
@@ -53,6 +54,9 @@ timer-driven run never hangs.
   path also carries the database. `db-up` exists for the workstation case, where the
   proxy stack never runs.
 - `db-create` needs `PASSWORD=` only the first time, while the role does not exist yet.
+- `db-update` is the only way the database image moves; `make update` leaves it alone. It
+  restarts PostgreSQL under every application on the host for a few seconds, and the tag
+  stays on one major version, so the data in the volume is used as it is.
 
 ### Updates
 
@@ -64,9 +68,11 @@ timer-driven run never hangs.
 This repo has no mechanism to push itself onto a host. Updates happen on the host with
 `make update` (`git fetch --all --prune`, `git reset --hard origin/$DEPLOY_BRANCH`, then
 `scripts/deploy-host.sh`). `DEPLOY_BRANCH` defaults to `main`. `deploy-host.sh` renders
-the config and runs `compose up -d --remove-orphans`, recreating containers only when the
-static config (`traefik/traefik.yml`, `crowdsec/`) changed. Changes under `/etc` and to
-systemd units are not included; run `make host-apply` by hand for those.
+the config and runs `compose up -d --remove-orphans`, which recreates a service whose
+definition changed (a new pinned Traefik version, for example). It restarts the containers
+when the static config (`traefik/traefik.yml`, `crowdsec/`) changed, except one it has
+just recreated. Changes under `/etc` and to systemd units are not included; run
+`make host-apply` by hand for those.
 
 After applying, `deploy-host.sh` runs `scripts/verify-routes.sh`: a real TLS handshake
 against 127.0.0.1:443 for every `Host(...)` found in the Traefik labels of running
@@ -75,6 +81,10 @@ failure: `make update` resets back to the commit it started from and re-applies 
 the unit exits non-zero, and `OnFailure=` raises an error notice through the file
 channel (mailed by the ops console). A failure that survives the rollback is host
 state (`.env`, `certs/`), not the commit.
+
+A new Traefik version is a commit like any other, because the version is pinned in
+`docker-compose.yml`, so the same rollback covers it: the previous commit names the
+previous version ("Image versions" in `README.md`).
 
 Automatic following is `edge-update.timer` (daily at 05:00 Asia/Tokyo). The unit is only
 installed by `make host-apply`; enable it once per host with

@@ -1,0 +1,21 @@
+# Proposes new versions of the images named in docker-compose.yml as pull requests.
+#
+# The Traefik version is pinned there, so a new release reaches the hosts only through a
+# commit on main. Merging one of these pull requests is that commit: hosts that enable
+# edge-update.timer apply it at the next daily run, the others at the next `make update`.
+# Read the release notes before merging (Traefik's migration guide lists behaviour changes
+# per patch release).
+#
+# Dependabot does not raise security updates for this ecosystem, only version updates on
+# this schedule, so the check runs every day.
+version: 2
+updates:
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    ignore:
+      # The shared database stays on one major version: its tag (postgres:17-alpine) follows
+      # minor releases through `make db-update`, and a new major needs a dump and restore.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
