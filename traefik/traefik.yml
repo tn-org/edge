@@ -91,6 +91,16 @@ entryPoints:
         - 2a06:98c0::/29
         - 2c0f:f248::/32
     http:
+      # Drop request headers whose name contains anything but letters, digits and dashes
+      # (X_Forwarded_For, X.Forwarded.For). PHP and nginx turn such a name into the same
+      # variable as the dashed header, so a client could pass its own value off as a
+      # header Traefik manages. nginx already ignores these names by default; dropping
+      # them here makes that not depend on the backend. Traefik warns at every start
+      # about an entry point that leaves this unset (the option exists since v3.7.12).
+      # The drop is silent and applies to every application on the host: a client that
+      # really sends such a header (api_key, X_Device_Id) to a backend that reads it has
+      # to rename it first.
+      aliasHeadersStrategy: delete
       # ACME http-01 challenges are handled internally before this, so they are not
       # redirected.
       redirections:
@@ -104,6 +114,8 @@ entryPoints:
     forwardedHeaders:
       trustedIPs: *cloudflare_ips
     http:
+      # Same rule as the web entrypoint (see the comment there).
+      aliasHeadersStrategy: delete
       # Applied to every router by default. Middlewares added by an application's labels
       # run after these.
       # Order: blocking, headers, rate limit, concurrency limit.
