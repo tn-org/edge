@@ -150,16 +150,16 @@ console container are listed by the console repo instead, and the combined live 
 visible in the console under scheduled tasks. Names do not spell out "daily" or "weekly",
 since the interval column already says so.
 
-| Time         | Name                                                                                          | Runner  | Configured by                                     | Result                     |
-| ------------ | --------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------- | -------------------------- |
-| Daily 04:05  | OS auto-update (all updates of the newest release, no reboot)                                 | systemd | dnf-automatic.timer (setup-auto-patch.sh)         | Mail on failure / applied  |
-| Daily 05:00  | edge update (git follow, compose apply; disabled by default)                                  | systemd | edge-update.timer (setup-update.sh)               | Mail on failure            |
-| Daily 08:00  | Abuse blocking record                                                                         | systemd | report-bans.timer (setup-bans.sh)                 | Mail on failure            |
-| Daily 08:15  | Certificate expiry report (warns under 14 days left)                                          | systemd | report-certs.timer (setup-certs.sh)               | Mail on failure / warning  |
-| Daily 08:20  | Pending reboot check (repeats daily while a reboot is due)                                    | systemd | report-reboot-check.timer (setup-reboot-check.sh) | Mail on the days it is due |
-| Daily 08:30  | Disk usage per directory + routine "Host daily report" (the host's heartbeat for the console) | systemd | report-disk-usage.timer (setup-disk-usage.sh)     | Mail on failure            |
-| Every 5 min  | Host state snapshots and operation execution                                                  | systemd | host-sync.timer (setup-host-sync.sh)              | Mail on failure            |
-| Sunday 06:00 | Remove unused docker images                                                                   | systemd | docker-prune.timer (setup-docker-prune.sh)        | Mail on failure            |
+| Time         | Name                                                                                          | Runner  | Configured by                                     | Result                    |
+| ------------ | --------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------- | ------------------------- |
+| Daily 04:05  | OS auto-update (all updates of the newest release, no reboot)                                 | systemd | dnf-automatic.timer (setup-auto-patch.sh)         | Mail on failure / applied |
+| Daily 05:00  | edge update (git follow, compose apply; disabled by default)                                  | systemd | edge-update.timer (setup-update.sh)               | Mail on failure           |
+| Daily 08:00  | Abuse blocking record                                                                         | systemd | report-bans.timer (setup-bans.sh)                 | Mail on failure           |
+| Daily 08:15  | Certificate expiry report (warns under 14 days left)                                          | systemd | report-certs.timer (setup-certs.sh)               | Mail on failure / warning |
+| Daily 08:20  | Pending reboot check (a warning once due 3 days with no reboot scheduled)                     | systemd | report-reboot-check.timer (setup-reboot-check.sh) | Mail on failure / warning |
+| Daily 08:30  | Disk usage per directory + routine "Host daily report" (the host's heartbeat for the console) | systemd | report-disk-usage.timer (setup-disk-usage.sh)     | Mail on failure           |
+| Every 5 min  | Host state snapshots and operation execution                                                  | systemd | host-sync.timer (setup-host-sync.sh)              | Mail on failure           |
+| Sunday 06:00 | Remove unused docker images                                                                   | systemd | docker-prune.timer (setup-docker-prune.sh)        | Mail on failure           |
 
 `host-sync` runs `scripts/report.sh host-sync`: it rewrites the snapshots under
 `sync/state/` (blocking state, timers, pending reboot, host facts, and the memory, swap,
@@ -187,6 +187,11 @@ blocks live in the CrowdSec database on a named volume. The renewal itself is si
 which is why `report-certs.timer` watches the outcome: it reads the ACME store daily and
 warns when any certificate has under 14 days left (renewal starts at 30 days, so under 14
 means it has been failing for over two weeks).
+
+The pending reboot check records a notice every morning while a reboot is due. For the
+first three days the notice is information only: it is in the console's system log, and no
+mail is sent for it. Once the reboot has been due three days with none scheduled, the
+notice becomes a warning and turns into mail. A scheduled reboot keeps it at information.
 
 Three ways a result reaches you:
 

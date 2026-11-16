@@ -1,6 +1,6 @@
 # Detect a pending reboot after a kernel update
 # Installed to: /etc/systemd/system/report-reboot-check.timer
-# 08:20 Asia/Tokyo, so the warning is queued before the daily report is assembled.
+# 08:20 Asia/Tokyo, so the notice is recorded before the daily report is assembled.
 # Persistent catches up runs missed while the machine was off.
 
 [Unit]

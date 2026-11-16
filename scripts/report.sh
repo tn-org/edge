@@ -15,7 +15,7 @@
 #   report.sh host-info   # write the facts about this host the console cannot derive itself
 #   report.sh host-metrics # write memory, swap, load and CPU of the host and of each container
 #   report.sh host-sync   # run bans-sync, timers, reboot-sync, host-info and host-metrics together (host-sync.timer)
-#   report.sh reboot-check # detect a pending reboot after a kernel update and warn daily while it lasts
+#   report.sh reboot-check # note a pending reboot daily; warn once it is 3 days due with none scheduled
 
 set -uo pipefail
 
@@ -1287,9 +1287,17 @@ PY
     ;;
   reboot-check)
     # dnf-automatic applies OS updates automatically but never reboots.
-    # A kernel update does not take effect until a reboot, so keep warning every day while
-    # one is outstanding. Without the reminder, nobody notices the machine is still running
-    # a vulnerable kernel.
+    # A kernel update does not take effect until a reboot, so record every day that one is
+    # outstanding. Without the reminder, nobody notices the machine is still running a
+    # vulnerable kernel.
+    #
+    # The notice is plain information at first. It becomes a warning once the reboot has
+    # been due for REBOOT_WARN_DAYS days with none scheduled. Updates arrive every few days,
+    # and a warning on the first morning of each made the console's daily report announce a
+    # problem on days when nothing was wrong. A reboot that is already scheduled never
+    # warns: what the warning asks for has been done.
+    REBOOT_WARN_DAYS=3
+
     if ! command -v needs-restarting >/dev/null 2>&1; then
       echo "needs-restarting is missing (dnf-utils is not installed)" >&2
       exit 1
@@ -1307,12 +1315,53 @@ PY
 
     state_dir_prepare
     [ -f "$STATE_FILE" ] || date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_FILE"
-    since="$(cat "$STATE_FILE")"
-    days=$(( ( $(date -u +%s) - $(date -u -d "$since" +%s) ) / 86400 ))
 
-    printf '%s\n\nFirst detected: %s (%d days ago)\nAction: run sudo reboot during a quiet period\n' \
-      "$detail" "$since" "$days" \
-      | "$SCRIPT_DIR/notify.sh" --warn "Reboot pending: kernel or similar updates are not active yet (${days} days)"
+    # How long the reboot has been due. A timestamp that is empty or cannot be read must not
+    # count as "today" for ever: a write that failed on a full disk leaves an empty file, and
+    # date -d "" is midnight today, so the notice would never become a warning. It counts as
+    # overdue instead.
+    #
+    # Overdue is judged an hour early. The timer starts up to five minutes late at random
+    # (RandomizedDelaySec), so on a host where this run wrote the timestamp, the run three
+    # days later can come a few minutes short of 72 hours.
+    since="$(cat "$STATE_FILE" 2>/dev/null)"
+    since_s=""
+    [ -z "$since" ] || since_s="$(date -u -d "$since" +%s 2>/dev/null)" || since_s=""
+    if [ -n "$since_s" ]; then
+      elapsed=$(( $(date -u +%s) - since_s ))
+      days=$(( elapsed / 86400 ))
+      due="${days} days"
+      first="$since (${days} days ago)"
+      overdue=0
+      if [ $(( elapsed + 3600 )) -ge $(( REBOOT_WARN_DAYS * 86400 )) ]; then
+        overdue=1
+      fi
+    else
+      due="since an unknown time"
+      first="unknown"
+      overdue=1
+    fi
+
+    # A reboot already scheduled in the OS. systemd keeps a scheduled shutdown in this file
+    # with its time as USEC=, the line reboot-sync reads the time from. A reboot scheduled
+    # from the console and one set by hand with shutdown -r both end up there. A file that
+    # cannot be read counts as nothing scheduled, so the doubt falls on the side of warning.
+    scheduled="no"
+    action="schedule a reboot from the ops console, or run sudo reboot during a quiet period"
+    if grep -q '^USEC=[0-9]' /run/systemd/shutdown/scheduled 2>/dev/null; then
+      scheduled="yes"
+      action="none, a reboot is already scheduled"
+    fi
+
+    title="Reboot pending: kernel or similar updates are not active yet (${due})"
+    body="$(printf '%s\n\nFirst detected: %s\nReboot scheduled: %s\nAction: %s' \
+      "$detail" "$first" "$scheduled" "$action")"
+
+    if [ "$overdue" = 1 ] && [ "$scheduled" = "no" ]; then
+      printf '%s\n' "$body" | "$SCRIPT_DIR/notify.sh" --warn "$title"
+    else
+      printf '%s\n' "$body" | "$SCRIPT_DIR/notify.sh" "$title"
+    fi
     ;;
   *)
     echo "usage: report.sh {os|bans|disk-usage|bans-sync|timers|reboot-sync|host-info|host-metrics|host-sync|reboot-check}" >&2
