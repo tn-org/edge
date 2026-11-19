@@ -148,13 +148,16 @@ The host layer does not call the ops console at all. The contract is one directo
     (or `%40`) become `:redacted`, and a path over 300 characters or with a control
     character (Unicode's Cc category: U+0000 to U+001F and U+007F to U+009F, the range
     the console refuses) is counted in `pagesOther`, and so is a path first seen after the
-    hostname's day already has 5000 paths. Paths are as the client sent them: percent
-    encoding is not decoded.
+    hostname's day already has 5000 paths, or after the run already has 60,000 over all
+    the hostnames and days it counts (so that made-up paths cannot make the run grow; its
+    output then says so). Such a path is not in `pages`, but its page views and visitors
+    are counted in `pagesOther`, and `visitorsCapped` is not set for it. Paths are as the
+    client sent them: percent encoding is not decoded.
   - Visitor caps: telling visitors apart takes memory for each of them, and a client can
     send a new User-Agent with every request, so it is capped. An entry is one visitor
     added to the visitors of a hostname's day, to those of one of its hours, of one of its
-    listed paths or of `pagesOther`. A hostname's day keeps at most 400,000 entries, and
-    one run at most 1,000,000 over all the hostnames and days it counts. A hostname's day
+    listed paths or of `pagesOther`. A hostname's day keeps at most 100,000 entries, and
+    one run at most 800,000 over all the hostnames and days it counts. A hostname's day
     whose page view would go over either cap adds no entry from then on and has
     `visitorsCapped` true: its `requests`, `pageViews`, `botPageViews` and the page views
     of its hours and paths are still exact, but `visitors`, the hours' `visitors` and

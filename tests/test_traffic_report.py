@@ -1,4 +1,4 @@
-"""Tests for scripts/traffic_report.py: the caps on telling visitors apart.
+"""Tests for scripts/traffic_report.py: the caps on telling visitors apart and on paths.
 
 Standard library only (unittest), like the script itself. Run from the root of this repo:
 
@@ -6,7 +6,7 @@ Standard library only (unittest), like the script itself. Run from the root of t
 
 The tests write made-up access logs into temporary directories and run the script's
 main() over them. MemoryTest fills the caps with their real values and measures the memory
-of the sets that tell visitors apart, which takes a few seconds.
+of the sets that tell visitors apart and of the listed paths, which takes a few seconds.
 """
 
 import contextlib
@@ -47,11 +47,15 @@ MOBILE_AGENT = (
 BOT_AGENT = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 
 CAP_MESSAGE = "Visitors reached the cap"
+PATHS_CAP_MESSAGE = "Listed paths reached the cap of the run"
 MIB = 1024 * 1024
 # The memory the visitor sets may take at the real caps. report-traffic.service gives a run
 # 300M; the rest is for Python itself and the lookups of hostnames and User-Agents
 # (LOOKUP_LIMIT keys of up to LOOKUP_KEY_LENGTH and MAX_AGENT_LENGTH characters).
 MEMORY_LIMIT = 150 * MIB
+# The memory the listed paths and the visitor sets may take together, both at the caps of
+# the run: the most a flood of made-up paths and User-Agents can make the counting take
+COMBINED_MEMORY_LIMIT = 220 * MIB
 
 
 def stamp(date, hour, minute=0):
@@ -153,6 +157,7 @@ class BelowCapTest(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertNotIn(CAP_MESSAGE, output)
+        self.assertNotIn(PATHS_CAP_MESSAGE, output)
         self.assertEqual(set(days), {"example.com"})
         self.assertEqual(set(days["example.com"]), {TODAY})
         day = days["example.com"][TODAY]
@@ -274,8 +279,81 @@ class RunCapTest(unittest.TestCase):
         self.assertNotIn("example.com on", output)
 
 
+class RunPathsCapTest(unittest.TestCase):
+    def test_a_path_first_seen_after_the_run_listed_its_paths_goes_to_pages_other(self):
+        lines = [
+            # 3 paths: all the run may list
+            line("example.com", stamp(TODAY, 10, 0), "/", agent=visitor_agent(1)),
+            line("example.com", stamp(TODAY, 10, 10), "/about", agent=visitor_agent(1)),
+            line("example.org", stamp(YESTERDAY, 10, 0), "/", agent=visitor_agent(1)),
+            # New paths from here on go to pagesOther, on any hostname and day
+            line("example.com", stamp(TODAY, 11, 0), "/contact", agent=visitor_agent(2)),
+            line("example.org", stamp(YESTERDAY, 11, 0), "/news", agent=visitor_agent(2)),
+            line("example.com", stamp(TODAY, 11, 20), "/contact", agent=visitor_agent(1)),
+            line("example.com", stamp(TODAY, 12, 0), "/blog", agent=visitor_agent(2)),
+            # A path already listed is still counted under it
+            line("example.com", stamp(TODAY, 11, 10), "/about", agent=visitor_agent(3)),
+        ]
+        with mock.patch.object(traffic_report, "MAX_RUN_PAGES", 3):
+            code, output, days = run(lines)
+
+        self.assertEqual(code, 0)
+        today = days["example.com"][TODAY]
+        self.assertEqual(today["requests"], 6)
+        self.assertEqual(today["pageViews"], 6)
+        self.assertEqual(today["visitors"], 3)
+        expected_hours = [hour(0, 0, 0)] * 24
+        expected_hours[10] = hour(2, 1, 1)
+        expected_hours[11] = hour(3, 3, 2)
+        expected_hours[12] = hour(1, 1, 0)
+        self.assertEqual(today["hours"], expected_hours)
+        self.assertEqual(
+            today["pages"],
+            [
+                {"path": "/about", "pageViews": 2, "visitors": 2},
+                {"path": "/", "pageViews": 1, "visitors": 1},
+            ],
+        )
+        self.assertEqual(today["pagesOther"], {"pageViews": 3, "visitors": 2})
+        self.assertEqual(today["devices"], {"mobile": 0, "desktop": 3, "tablet": 0, "other": 0})
+        self.assertIs(today["visitorsCapped"], False)
+
+        yesterday = days["example.org"][YESTERDAY]
+        self.assertEqual(yesterday["pageViews"], 2)
+        self.assertEqual(yesterday["visitors"], 2)
+        self.assertEqual(yesterday["pages"], [{"path": "/", "pageViews": 1, "visitors": 1}])
+        self.assertEqual(yesterday["pagesOther"], {"pageViews": 1, "visitors": 1})
+        self.assertIs(yesterday["visitorsCapped"], False)
+
+        self.assertIn(PATHS_CAP_MESSAGE, output)
+        self.assertNotIn(CAP_MESSAGE, output)
+
+    def test_the_cap_of_a_day_alone_is_not_reported(self):
+        lines = [
+            line("example.com", stamp(TODAY, 10, 0), "/"),
+            # Over the day's cap: pagesOther, the run's cap is not involved
+            line("example.com", stamp(TODAY, 10, 10), "/about"),
+            # Another hostname's day has a cap of its own
+            line("example.org", stamp(TODAY, 10, 20), "/about"),
+        ]
+        with mock.patch.object(traffic_report, "MAX_DAY_PAGES", 1):
+            code, output, days = run(lines)
+
+        self.assertEqual(code, 0)
+        capped = days["example.com"][TODAY]
+        self.assertEqual(capped["pages"], [{"path": "/", "pageViews": 1, "visitors": 1}])
+        self.assertEqual(capped["pagesOther"], {"pageViews": 1, "visitors": 1})
+        self.assertIs(capped["visitorsCapped"], False)
+        other = days["example.org"][TODAY]
+        self.assertEqual(other["pages"], [{"path": "/about", "pageViews": 1, "visitors": 1}])
+        self.assertNotIn(PATHS_CAP_MESSAGE, output)
+
+
 class MemoryTest(unittest.TestCase):
-    """The visitor sets filled up to MAX_RUN_TRACKED, with the real caps, stay under 150 MiB.
+    """Memory at the real caps, measured with tracemalloc.
+
+    The visitor sets filled up to MAX_RUN_TRACKED stay under MEMORY_LIMIT, and with the
+    listed paths filled up to MAX_RUN_PAGES as well, under COMBINED_MEMORY_LIMIT.
 
     page_view is fed directly, the way count_line calls it: every call hashes the client
     address and the User-Agent into a new int, and paths are new strings near
@@ -287,7 +365,7 @@ class MemoryTest(unittest.TestCase):
     CLIENT = "192.0.2.1"
     PATH_PREFIX = "/" + "p" * 280 + "-"
 
-    def measure(self, name, feed):
+    def measure(self, name, feed, limit=MEMORY_LIMIT):
         self.assertFalse(tracemalloc.is_tracing())
         stats = traffic_report.Stats()
         tracemalloc.start()
@@ -299,16 +377,20 @@ class MemoryTest(unittest.TestCase):
             tracemalloc.stop()
 
         print(
-            f"\n  {name}: peak {peak / MIB:.1f} MiB for {stats.tracked} entries over "
-            f"{len(entries)} days of a hostname (Python {platform.python_version()})",
+            f"\n  {name}: peak {peak / MIB:.1f} MiB for {stats.tracked} entries and "
+            f"{stats.paths} listed paths over {len(entries)} days of a hostname "
+            f"(Python {platform.python_version()})",
             file=sys.stderr,
         )
         self.assertGreater(stats.tracked, traffic_report.MAX_RUN_TRACKED - 3)
         self.assertEqual(sum(entry.tracked for entry in entries), stats.tracked)
+        self.assertEqual(sum(len(entry.pages) for entry in entries), stats.paths)
+        self.assertLessEqual(stats.paths, traffic_report.MAX_RUN_PAGES)
         for entry in entries:
             self.assertLessEqual(entry.tracked, traffic_report.MAX_DAY_TRACKED)
         self.assertTrue(all(result["visitorsCapped"] for result in results))
-        self.assertLess(peak, MEMORY_LIMIT)
+        self.assertLess(peak, limit)
+        return stats, entries
 
     def test_every_page_view_a_new_visitor(self):
         def feed(stats):
@@ -347,6 +429,33 @@ class MemoryTest(unittest.TestCase):
             return entries
 
         self.measure("few visitors on many pages", feed)
+
+    def test_listed_paths_and_visitors_both_at_the_caps_of_the_run(self):
+        # Every visitor sees every path, so each day lists MAX_DAY_PAGES paths and every
+        # set of a path's visitors is as full as the entries allow, the most memory per
+        # entry. The days go on until the run has MAX_RUN_PAGES paths; those that come after
+        # the run's entries are used up still list theirs.
+        def feed(stats):
+            entries = []
+            while stats.paths < traffic_report.MAX_RUN_PAGES:
+                entry = traffic_report.HostDay()
+                entries.append(entry)
+                number = 0
+                while number == 0 or not entry.capped:
+                    agent = "Mozilla/5.0 %d %d" % (len(entries), number)
+                    for page in range(traffic_report.MAX_DAY_PAGES):
+                        visitor = hash((self.CLIENT, agent))
+                        path = self.PATH_PREFIX + str(page)
+                        entry.page_view(page % 24, visitor, traffic_report.DESKTOP, path, stats)
+                    number += 1
+            return entries
+
+        stats, entries = self.measure(
+            "listed paths and visitors at the caps of the run", feed, COMBINED_MEMORY_LIMIT
+        )
+        self.assertEqual(stats.paths, traffic_report.MAX_RUN_PAGES)
+        for entry in entries[:-1]:
+            self.assertEqual(len(entry.pages), traffic_report.MAX_DAY_PAGES)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,11 @@ Telling visitors apart takes memory for each of them, and a client can make up a
 User-Agent on every request, so it is capped (MAX_DAY_TRACKED and MAX_RUN_TRACKED under
 "Limits"). A hostname's day that reaches a cap is written with visitorsCapped: its page
 views stay exact and its visitor figures are lower than they really are. The run still
-succeeds.
+succeeds. The paths kept for the lists of pages are capped as well, per hostname and day
+and over the whole run (MAX_DAY_PAGES and MAX_RUN_PAGES), since a site answering every
+path with 200 lets a client make up paths too: a path first seen after a cap is reached is
+counted in pagesOther instead of being listed. That lowers no figure, so the day is not
+marked.
 
 Standard library only, written for Python 3.9 (the python3 of Amazon Linux 2023).
 
@@ -82,10 +86,18 @@ MAX_HOSTS = 50
 MAX_DAY_HOSTS = 1000
 # Pages listed per day; the rest is added up in pagesOther
 TOP_PAGES = 50
-# Paths counted per hostname and day while the lines are read. A path first seen after the
-# day already has this many goes to pagesOther, so that requests for made-up paths (a site
-# answering every path with 200) cannot make the run grow.
+# Paths counted while the lines are read, per hostname and day (MAX_DAY_PAGES) and over
+# every hostname and day counted in one run (MAX_RUN_PAGES). A path first seen after its
+# day already has MAX_DAY_PAGES of them, or after the run has MAX_RUN_PAGES, goes to
+# pagesOther, so that requests for made-up paths (a site answering every path with 200)
+# cannot make the run grow. The cap of the day alone would not do: every path kept holds
+# its own copy of the path and an empty set for its visitors, so the paths of the run would
+# still grow with the number of hostnames and days it counts. The page views of such a
+# path are counted exactly in pagesOther, and its visitors among those of pagesOther (under
+# MAX_DAY_TRACKED and MAX_RUN_TRACKED like any other), so the day is not marked for it; the
+# run's output says when the cap of the run was reached.
 MAX_DAY_PAGES = 5000
+MAX_RUN_PAGES = 60_000
 MAX_PATH_LENGTH = 300
 # The hostname is the file name, and "<host>.json.tmp" has to fit in 255 bytes
 MAX_HOST_LENGTH = 255 - len(".json.tmp")
@@ -108,10 +120,13 @@ LOOKUP_KEY_LENGTH = 512
 # page view under either cap adds none from then on: it keeps the ones it has, goes on
 # counting its page views and requests exactly, and is written with visitorsCapped, its
 # visitor figures lower than they really are. The run still succeeds.
-# Per hostname and day
-MAX_DAY_TRACKED = 400_000
+# tests/test_traffic_report.py measures the memory these sets and the listed paths take at
+# the caps of the run.
+# Per hostname and day. An eighth of the run's, so that a flood on one or two hostnames, on
+# today and yesterday, leaves most of the run's entries to the other hostnames and days.
+MAX_DAY_TRACKED = 100_000
 # Over every hostname and day counted in one run
-MAX_RUN_TRACKED = 1_000_000
+MAX_RUN_TRACKED = 800_000
 # Hostname days named in the output of a run when some reached a cap; the rest are counted
 CAPPED_LISTED = 5
 
@@ -419,7 +434,8 @@ class HostDay:
         # visitor -> first hour * 4 + device. A visitor is Python's own hash of the client
         # address and the User-Agent, which only means something inside this process.
         self.visitors = {}
-        # path -> [page views, set of visitors], at most MAX_DAY_PAGES paths
+        # path -> [page views, set of visitors], at most MAX_DAY_PAGES paths (and
+        # MAX_RUN_PAGES over every day of the run)
         self.pages = {}
         self.other_views = 0
         self.other_visitors = set()
@@ -429,16 +445,20 @@ class HostDay:
         self.capped = False
 
     def page_view(self, hour, visitor, device, path, stats):
-        """Count one page view; stats holds the entries added over the whole run."""
+        """Count one page view; stats holds the entries and paths added over the whole run."""
         # Page views are counted exactly, whether or not the visitor can still be added
         self.page_views += 1
         self.hour_views[hour] += 1
         page = None if path is None else self.pages.get(path)
         if page is None and path is not None and len(self.pages) < MAX_DAY_PAGES:
-            page = self.pages[path] = [0, set()]
+            if stats.paths < MAX_RUN_PAGES:
+                page = self.pages[path] = [0, set()]
+                stats.paths += 1
+            else:
+                stats.paths_capped = True
         if page is None:
             # pagesOther: a path that is not listed, or a new one once the day has
-            # MAX_DAY_PAGES of them
+            # MAX_DAY_PAGES of them or the run MAX_RUN_PAGES
             self.other_views += 1
             seen = self.other_visitors
         else:
@@ -543,6 +563,11 @@ class Stats:
         self.other_hosts = 0
         # Entries added to tell visitors apart, over every day of the run (MAX_RUN_TRACKED)
         self.tracked = 0
+        # Paths listed over every hostname and day of the run (MAX_RUN_PAGES), and whether a
+        # new path went to pagesOther because the run already had that many. Counted apart
+        # from the entries above: a path turned away leaves the visitor figures exact.
+        self.paths = 0
+        self.paths_capped = False
 
 
 class LogFile:
@@ -1094,6 +1119,11 @@ def main(argv=None):
         print(
             f"Visitors reached the cap for {len(capped)} of the hostnames' days, written with "
             f"visitorsCapped (visitor figures low, page views exact): {listed}"
+        )
+    if stats.paths_capped:
+        print(
+            f"Listed paths reached the cap of the run ({MAX_RUN_PAGES}): paths first seen after "
+            "that were counted in pagesOther instead of being listed, their page views exact"
         )
     return 0
 

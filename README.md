@@ -378,11 +378,13 @@ devices, per hour as well, over the last 190 days. `report-traffic.timer` rewrit
 every hour at about :07 from what the log already records. A day that is over is counted
 once and kept in `.state/traffic/`, and on a host's first runs the earlier days are filled
 in from the rotated logs, 7 a run. Only counts and paths leave the counting: no client
-address and no User-Agent. Telling visitors apart is capped in memory (400,000 entries per
-hostname and day, 1,000,000 per run), so a flood of made-up User-Agents cannot stop the
+address and no User-Agent. Telling visitors apart is capped in memory (100,000 entries per
+hostname and day, 800,000 per run), so a flood of made-up User-Agents cannot stop the
 count: a day that reaches a cap is written with `visitorsCapped` true, its page views exact
-and its visitor figures low. The rules for each figure are under "Contract with the ops
-console" in `docs/architecture.md`.
+and its visitor figures low. The paths kept for the lists of pages are capped too (5000 per
+hostname and day, 60,000 per run), so that made-up paths cannot either: a path first seen
+after that is counted in `pagesOther` instead of being listed, which lowers no figure. The
+rules for each figure are under "Contract with the ops console" in `docs/architecture.md`.
 
 Operation requests (unblock an IP, run a timer, schedule a reboot) are picked up by the
 same run; a request whose `res-` file already exists is never run twice, and the console

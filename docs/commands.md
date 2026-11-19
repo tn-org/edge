@@ -179,8 +179,11 @@ counted once and kept in `.state/traffic/`; on a host's first runs the earlier d
 filled in from the rotated logs, at most 7 a run, so a run then takes longer than the
 hourly one that only counts today and yesterday. The unit runs at a low CPU and disk
 priority, with 300 MB of memory, no swap and 30 minutes at most. The visitors it tells
-apart are capped well under that memory; a day that reaches a cap is written with
-`visitorsCapped` and the run still succeeds, so the memory limit is only the last guard.
+apart (100,000 entries per hostname and day, 800,000 per run) and the paths it keeps for
+the lists of pages (5000 per hostname and day, 60,000 per run) are capped well under that
+memory. A day that reaches a visitor cap is written with `visitorsCapped`, a path first
+seen after a path cap is counted in `pagesOther`, and the run still succeeds, so the
+memory limit is only the last guard.
 The rules for each figure are under "Contract with the ops console" in
 `docs/architecture.md`.
 
