@@ -1,0 +1,16 @@
+# Hourly count of the access log per hostname and day, for the ops console's user analytics
+# Installed to: /etc/systemd/system/report-traffic.timer
+# Every hour at about :07, after the hour it closes has had a few minutes for its last lines.
+# Persistent catches up a run missed while the machine was off.
+
+[Unit]
+Description=Count the access log per hostname and day
+
+[Timer]
+OnCalendar=*-*-* *:07:00
+Persistent=true
+RandomizedDelaySec=180
+Unit=report-traffic.service
+
+[Install]
+WantedBy=timers.target

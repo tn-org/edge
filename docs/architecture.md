@@ -9,8 +9,9 @@ This repo carries the host layer only. It ships the whole "box" side of a single
   block; the bouncer plugin inside Traefik does the actual rejecting.
 - **Host maintenance**: a swapfile sized from the host's memory with its boot unit and
   swappiness setting (`scripts/setup-swap.sh`, `systemd/swapfile.swap`, `sysctl/`),
-  systemd timers (disk usage, blocking report, certificate expiry, pending reboot, host
-  sync), log rotation, OS auto-updates (dnf-automatic) and the operational scripts under
+  systemd timers (disk usage, access log count, blocking report, certificate expiry,
+  pending reboot, host sync), log rotation, OS auto-updates (dnf-automatic) and the
+  operational scripts under
   `scripts/`. The swap is for the host and the edge containers; keeping application
   containers off it is left to their own compose files. Its rules are under "Swap" in
   `README.md`.
@@ -90,15 +91,80 @@ The host layer does not call the ops console at all. The contract is one directo
   no service; the list is only shown. The JSON shape of `bans.json` dates from a
   fail2ban-era implementation and did not change: what used to be a fail2ban "jail" is a
   CrowdSec scenario name.
+- `state/traffic/<host>.json` is the Traefik access log counted per hostname and per
+  Japanese day (Asia/Tokyo), for the console's user analytics screen. `report.sh traffic`
+  writes it every hour at about :07 (`report-traffic.timer`; the counting and its rules
+  are in `scripts/traffic_report.py`): one file per hostname, the whole file on every run,
+  through a `.tmp` file and a rename. It counts only what the log already records;
+  `traefik/traefik.yml` and `logrotate/traefik` are not changed for it.
+  - Shape: `version` (1), `generatedAt`, `host`, `rulesVersion`, `timezone`
+    (`Asia/Tokyo`) and `days`, oldest first. Each day has `date`, `complete`,
+    `coveredUntil`, `computedAt`, `missingHours`, `requests`, `pageViews`, `visitors`,
+    `botPageViews`, `hours` (always 24, 00:00 to 23:00, each with `pageViews`, `visitors`
+    and `newVisitors`), `pages` (at most 50, most page views first, each with `path`,
+    `pageViews` and `visitors`), `pagesOther` (`pageViews` and `visitors` of the rest)
+    and `devices` (`mobile`, `desktop`, `tablet` and `other`, in visitors).
+  - Days: a line's `StartUTC`, in Japanese time, decides its day and hour, never the file
+    it is in or the host's time zone. The window is today and the 189 days before it. A
+    day is `complete` once it has been over for an hour and every log file that may hold
+    it was read; from then on it is kept in `.state/traffic/` and not counted again, so its
+    `computedAt` no longer moves. Today, and yesterday until it is complete, are counted
+    again on every run. The days before that are filled in from the rotated logs
+    (compressed ones included) at most 7 a run, newest first, so the first runs on a host
+    fill the window in about a day. `coveredUntil` is the end of the day once it is
+    complete and the minute of the run before that. `missingHours` are the hours already
+    over in which the whole log, not only this hostname, has no line at all: a gap in the
+    log rather than a quiet hour.
+  - Hostnames: `RequestHost` in lower case without a port. Lines without a `RouterName`
+    are not counted, nor lines of a router of Traefik's own (a name ending in `@internal`,
+    such as the redirect from port 80, which answers every hostname), and neither are
+    hostnames that do not match
+    `^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`, bare IPv4
+    addresses and names over 246 characters (the file name has to fit). A day counts at
+    most 1000 hostnames, in the order they first appear; the lines of the others are not
+    counted. At most 50 hostnames are written, the most page views over the window first
+    (then requests). A hostname's `days` start at the first day it has a line, and a day
+    counted after that without one is all zeros. The file of a hostname that has no line left in the window,
+    or is no longer among the 50, is removed.
+  - Figures: `requests` is every counted line. A page view is a GET answered with 2xx or
+    304 for a path shaped like a page (no extension in the last segment, a trailing slash,
+    or `.html`), except `/health`, `/health/`, `/_astro/`, `/assets/`, `/.well-known/`,
+    `/cdn-cgi/`, `/api/` and `/internal/`, and paths starting with `/robots.txt`,
+    `/sitemap` or `/favicon`. A page view from a bot (an empty User-Agent, or one naming a
+    crawler, an HTTP library, a scanner or a monitoring service) is counted in
+    `botPageViews` and nowhere else. A visitor is one client address with one User-Agent
+    that has a page view that day; the 24 `newVisitors` add up to the day's `visitors`, and
+    so do the four `devices`. Visitors are not matched up across days. The client address
+    is `ClientHost` (else `ClientAddr`); when it is a comma-separated list (X-Forwarded-For
+    trusted from a CDN, whose front part the client writes), only the last value is used.
+    Behind two trusted proxies in a row that last value is the first proxy's address, so
+    the visitors coming through one of its servers are counted as fewer than they are. The
+    User-Agent is cut to 512 characters before it is used. Paths lose the query; segments
+    of digits only, shaped like a UUID or holding a token (a run of 20 or more ASCII
+    letters and digits with both in it, or of 16 or more hexadecimal digits; words joined
+    by hyphens such as `top-10-best-cameras-2026` stay) become `:id`, segments holding `@`
+    (or `%40`) become `:redacted`, and a path over 300 characters or with a control
+    character (Unicode's Cc category: U+0000 to U+001F and U+007F to U+009F, the range
+    the console refuses) is counted in `pagesOther`, and so is a path first seen after the
+    hostname's day already has 5000 paths. Paths are as the client sent them: percent
+    encoding is not decoded.
+  - No client address and no User-Agent is passed on, nor anything derived from them that
+    could tell one client from another. Both are read only inside the counting process;
+    these files, `.state/traffic/` and the output of the run hold counts and paths only.
+  - A change to the counting rules raises `rulesVersion` (now 2). The kept days are then
+    thrown away and the window is counted again, 7 days a run.
+  - `state/traffic/` itself is created by every run that writes into `sync/`, so a host
+    that has `make update` but not yet `make host-apply` has the directory with no file in
+    it.
 - `sync/ops/` is the other direction. The console writes `req-<id>.json`
   (`kind` = `ban`, `timer` or `reboot`), the host executes it during `host-sync` and writes
   `res-<id>.json` beside it; the console deletes both once it has taken the result in. A
   request that already has a result is never run again. What an operation may touch is
   decided on this side (`is_managed_unit`), never by the request.
-- Permissions: `state/` is 755 with 644 files (the console mounts it read-only), `ops/` is
-  777 with 666 files, because the console container writes there as a different user. The
-  timers run as root and restore ownership after writing, the same way
-  `render-config.sh` does for the generated config.
+- Permissions: `state/` and `state/traffic/` are 755 with 644 files (the console mounts
+  them read-only), `ops/` is 777 with 666 files, because the console container writes
+  there as a different user. The timers run as root and restore ownership after writing,
+  the same way `render-config.sh` does for the generated config.
 - There is no shared secret, no URL and no key in `.env` for any of this. A host without a
   console writes the same files and nobody reads them.
 - The console publishes itself through the Traefik labels in its own compose file. Both

@@ -11,6 +11,8 @@
 #     bans.json timers.json reboot.json disk-usage.json host.json metrics.json
 #                                   full snapshots, rewritten on every run (host.json only
 #                                   when its content changed, so its generatedAt stays put)
+#     traffic/<host>.json           the access log counted per hostname and day, one file
+#                                   per hostname, rewritten hourly (report.sh traffic)
 #   sync/ops/                       the console writes req-<id>.json, this side answers
 #                                   with res-<id>.json; the console deletes both once it
 #                                   has taken the result in
@@ -22,6 +24,7 @@
 SYNC_DIR="$ROOT_DIR/sync"
 SYNC_STATE_DIR="$SYNC_DIR/state"
 SYNC_EVENTS_DIR="$SYNC_STATE_DIR/events"
+SYNC_TRAFFIC_DIR="$SYNC_STATE_DIR/traffic"
 SYNC_OPS_DIR="$SYNC_DIR/ops"
 
 # Create the channel. Called before every write, because sync/ is untracked host state and
@@ -29,8 +32,8 @@ SYNC_OPS_DIR="$SYNC_DIR/ops"
 # ops/ is world writable because the console container writes its requests there as a
 # different user. The trust model is unchanged: anyone with an account on this host.
 sync_prepare() {
-  mkdir -p "$SYNC_EVENTS_DIR" "$SYNC_OPS_DIR" 2>/dev/null || true
-  chmod 755 "$SYNC_DIR" "$SYNC_STATE_DIR" "$SYNC_EVENTS_DIR" 2>/dev/null || true
+  mkdir -p "$SYNC_EVENTS_DIR" "$SYNC_TRAFFIC_DIR" "$SYNC_OPS_DIR" 2>/dev/null || true
+  chmod 755 "$SYNC_DIR" "$SYNC_STATE_DIR" "$SYNC_EVENTS_DIR" "$SYNC_TRAFFIC_DIR" 2>/dev/null || true
   chmod 777 "$SYNC_OPS_DIR" 2>/dev/null || true
 }
 

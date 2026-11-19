@@ -9,6 +9,7 @@
 #   report.sh os          # read the dnf-automatic body on stdin, notify if anything was applied
 #   report.sh bans        # record a summary of blocking status as a notification
 #   report.sh disk-usage  # write directory sizes and large files in / to sync/state, then send the daily host heartbeat
+#   report.sh traffic     # count the access log per hostname and day into sync/state/traffic (no notification)
 #   report.sh bans-sync   # write blocking state and run the queued IP operations (no notification)
 #   report.sh timers      # write systemd timer state and run the queued operations (no notification)
 #   report.sh reboot-sync # write reboot state and services to restart, apply the scheduled reboots (no notification)
@@ -47,7 +48,8 @@ send() {
 }
 
 # Make sure .state/ exists. It holds the small files kept between runs: the pending-reboot
-# timestamp and the services to restart from here, the config hash from deploy-host.sh.
+# timestamp, the services to restart and the counted days of the access log (traffic/) from
+# here, the config hash from deploy-host.sh.
 # The timers run this script as root while make update runs deploy-host.sh as the deploy
 # user, so a root run must not leave the directory root-owned, or that user could no longer
 # write its config hash there. Same idea as sync_fix_ownership in sync-lib.sh.
@@ -332,6 +334,33 @@ PY
     # route red for good. Routine: excluded from lists and unread badges, counted as alive.
     printf '%s\n' "$summary" | send "Host daily report" routine
     ;;
+  traffic)
+    # Visitors, page views, the most viewed pages and devices per hostname and Japanese day,
+    # counted from the Traefik access log for the console's user analytics screen
+    # (report-traffic.timer, hourly). scripts/traffic_report.py does the counting and holds
+    # the rules for every figure; this names the directories and puts the ownership back.
+    #
+    # It writes sync/state/traffic/<host>.json, one file per hostname, and keeps the days it
+    # has counted in .state/traffic/ so that a day that is over is never counted again. The
+    # client address and the User-Agent are read to tell visitors apart and to sort out bots
+    # and devices, and never leave that process: both places hold counts and paths only.
+    # traefik/traefik.yml and logrotate/traefik are not touched; only what the log already
+    # records is counted.
+    sync_prepare
+    state_dir_prepare || exit 1
+    python3 "$SCRIPT_DIR/traffic_report.py" \
+      --log-dir "$ROOT_DIR/logs/traefik" \
+      --out-dir "$SYNC_TRAFFIC_DIR" \
+      --cache-dir "$ROOT_DIR/.state/traffic"
+    rc=$?
+    # The timer runs this as root. Leave nothing root-owned behind, so a hand run by the
+    # deploy user can still write both places (same idea as sync_fix_ownership).
+    sync_fix_ownership
+    if [ "$(id -u)" = 0 ]; then
+      chown -R --reference="$ROOT_DIR" "$ROOT_DIR/.state/traffic" 2>/dev/null || true
+    fi
+    exit "$rc"
+    ;;
   bans-sync)
     # CrowdSec lives inside a container, so write its state out as a snapshot the console
     # can read, then carry out the IP operations the console has queued in sync/ops. One
@@ -521,7 +550,8 @@ PY
     is_managed_unit() {
       case "$1" in
         dnf-automatic.timer|report-bans.timer|report-disk-usage.timer|report-certs.timer|\
-        report-reboot-check.timer|host-sync.timer|docker-prune.timer|logrotate.timer) return 0 ;;
+        report-reboot-check.timer|report-traffic.timer|host-sync.timer|docker-prune.timer|\
+        logrotate.timer) return 0 ;;
         *) return 1 ;;
       esac
     }
@@ -1315,7 +1345,7 @@ PY
       | "$SCRIPT_DIR/notify.sh" --warn "Reboot pending: kernel or similar updates are not active yet (${days} days)"
     ;;
   *)
-    echo "usage: report.sh {os|bans|disk-usage|bans-sync|timers|reboot-sync|host-info|host-metrics|host-sync|reboot-check}" >&2
+    echo "usage: report.sh {os|bans|disk-usage|traffic|bans-sync|timers|reboot-sync|host-info|host-metrics|host-sync|reboot-check}" >&2
     exit 2
     ;;
 esac

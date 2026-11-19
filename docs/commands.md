@@ -102,7 +102,7 @@ installed by `make host-apply`; enable it once per host with
 - `host-apply` runs the `scripts/setup-*.sh` steps in turn: first the swapfile with its
   boot unit and its swappiness (`setup-swap.sh`), then log rotation, OS auto-updates, the
   pending reboot check, the blocking report, the image cleanup, the disk usage record, the
-  certificate report, host
+  access log count, the certificate report, host
   sync and the auto-follow unit, and it ends with one host sync run. The whole run is
   safe to repeat, and only one runs at a time: a second `host-apply` waits up to 10
   minutes for the first, then fails without changing anything. A running host picks up a
@@ -158,6 +158,7 @@ since the interval column already says so.
 | Daily 08:15  | Certificate expiry report (warns under 14 days left)                                          | systemd | report-certs.timer (setup-certs.sh)               | Mail on failure / warning  |
 | Daily 08:20  | Pending reboot check (repeats daily while a reboot is due)                                    | systemd | report-reboot-check.timer (setup-reboot-check.sh) | Mail on the days it is due |
 | Daily 08:30  | Disk usage per directory + routine "Host daily report" (the host's heartbeat for the console) | systemd | report-disk-usage.timer (setup-disk-usage.sh)     | Mail on failure            |
+| Hourly :07   | Access log counted per hostname and day (the console's user analytics)                        | systemd | report-traffic.timer (setup-traffic.sh)           | Mail on failure            |
 | Every 5 min  | Host state snapshots and operation execution                                                  | systemd | host-sync.timer (setup-host-sync.sh)              | Mail on failure            |
 | Sunday 06:00 | Remove unused docker images                                                                   | systemd | docker-prune.timer (setup-docker-prune.sh)        | Mail on failure            |
 
@@ -171,6 +172,14 @@ stay well inside the unit's 180-second limit. When `docker stats` cannot be used
 or is cut off, or a hand-run's user is not in the docker group), `metrics.json` is still
 written with the host's figures and a null container list, and the run still succeeds.
 See "Talking to the ops console" in `README.md`.
+
+`report-traffic` runs `scripts/report.sh traffic`: it counts the Traefik access log per
+hostname and Japanese day into `sync/state/traffic/<host>.json`. A day that is over is
+counted once and kept in `.state/traffic/`; on a host's first runs the earlier days are
+filled in from the rotated logs, at most 7 a run, so a run then takes longer than the
+hourly one that only counts today and yesterday. The unit runs at a low CPU and disk
+priority, with 300 MB of memory, no swap and 30 minutes at most. The rules for each figure
+are under "Contract with the ops console" in `docs/architecture.md`.
 
 `edge-update` is the only one disabled by default. It runs only on hosts where somebody
 ran `sudo systemctl enable --now edge-update.timer`. There is no mechanism that deploys to

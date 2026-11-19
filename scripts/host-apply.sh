@@ -102,6 +102,7 @@ for step in \
   setup-bans \
   setup-docker-prune \
   setup-disk-usage \
+  setup-traffic \
   setup-certs \
   setup-host-sync \
   setup-update

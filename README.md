@@ -60,7 +60,8 @@ Log in to the server over SSH or a session manager as the deploy user (for examp
    `make setup`: shared network, rendered config, Traefik + CrowdSec, then a swapfile
    with its boot unit and swappiness setting (see "Swap" below), the `/etc` files and
    systemd timers (log rotation, OS auto-updates, pending reboot check, blocking report,
-   certificate expiry report, disk usage record, host sync). The auto-follow timer
+   certificate expiry report, disk usage record, access log count, host sync). The
+   auto-follow timer
    (`edge-update`) is installed but deliberately left disabled.
 
    Idempotent — existing `.env` values are never overwritten. Pass
@@ -339,7 +340,8 @@ sync/
  │  ├ reboot.json                pending-reboot state and services to restart
  │  ├ disk-usage.json            usage per directory, plus large files directly under / (daily)
  │  ├ host.json                  facts about the host itself (dashboard FQDN, whether blocking runs)
- │  └ metrics.json               memory, swap, load and CPU of the host and of each container
+ │  ├ metrics.json               memory, swap, load and CPU of the host and of each container
+ │  └ traffic/<host>.json        visitors, page views, pages and devices per Japanese day (hourly)
  └ ops/                      the console writes req-<id>.json, the host answers res-<id>.json
 ```
 
@@ -369,6 +371,15 @@ failed one included, is kept in `.state/services-to-restart` and asked for again
 after 30 minutes or a reboot. Until then the list can be behind in both directions: a
 service restarted by hand stays on it, and one an update has just replaced is not on it
 yet. edge restarts no service; the list is only shown.
+
+`traffic/<host>.json` is the Traefik access log counted per hostname and per Japanese day,
+for the console's user analytics screen: visitors, page views, the most viewed pages and
+devices, per hour as well, over the last 190 days. `report-traffic.timer` rewrites it
+every hour at about :07 from what the log already records. A day that is over is counted
+once and kept in `.state/traffic/`, and on a host's first runs the earlier days are filled
+in from the rotated logs, 7 a run. Only counts and paths leave the counting: no client
+address and no User-Agent. The rules for each figure are under "Contract with the ops
+console" in `docs/architecture.md`.
 
 Operation requests (unblock an IP, run a timer, schedule a reboot) are picked up by the
 same run; a request whose `res-` file already exists is never run twice, and the console
