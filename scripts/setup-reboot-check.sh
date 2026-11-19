@@ -39,4 +39,5 @@ systemctl list-timers report-reboot-check.timer --no-pager || true
 echo ""
 echo "Pending reboot check configured"
 echo "Run it now: sudo systemctl start report-reboot-check.service"
-echo "A warning arrives every morning while a reboot is due, and stops once you reboot"
+echo "A notice is recorded every morning while a reboot is due, and stops once you reboot."
+echo "It becomes a warning once the reboot has been due 3 days with none scheduled"
