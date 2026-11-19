@@ -13,6 +13,12 @@ User-Agent are read to tell visitors apart and to sort out bots and devices. Nei
 them, nor anything derived from them that could tell one client from another, is written
 to the files for the console, to the cache or to the output of the run.
 
+Telling visitors apart takes memory for each of them, and a client can make up a new
+User-Agent on every request, so it is capped (MAX_DAY_TRACKED and MAX_RUN_TRACKED under
+"Limits"). A hostname's day that reaches a cap is written with visitorsCapped: its page
+views stay exact and its visitor figures are lower than they really are. The run still
+succeeds.
+
 Standard library only, written for Python 3.9 (the python3 of Amazon Linux 2023).
 
 Usage:
@@ -92,6 +98,22 @@ MAX_AGENT_LENGTH = 512
 # line, for the same reason.
 LOOKUP_LIMIT = 50000
 LOOKUP_KEY_LENGTH = 512
+# Entries kept in memory to tell visitors apart. One entry is one visitor added to the
+# visitors of a hostname's day, to those of one of its hours, of one of its listed paths or
+# of pagesOther. A visitor is a client address with a User-Agent, and anyone can send a new
+# User-Agent with every request, so without a cap a flood of such requests would grow
+# these sets until the run is killed for its memory (MemoryMax=300M and MemorySwapMax=0 in
+# report-traffic.service). The day would then never be written, and every later run would
+# pick it again and fail the same way. A hostname's day that cannot add the entries of a
+# page view under either cap adds none from then on: it keeps the ones it has, goes on
+# counting its page views and requests exactly, and is written with visitorsCapped, its
+# visitor figures lower than they really are. The run still succeeds.
+# Per hostname and day
+MAX_DAY_TRACKED = 400_000
+# Over every hostname and day counted in one run
+MAX_RUN_TRACKED = 1_000_000
+# Hostname days named in the output of a run when some reached a cap; the rest are counted
+CAPPED_LISTED = 5
 
 # ---- Log files -----------------------------------------------------------------------
 
@@ -383,6 +405,8 @@ class HostDay:
         "pages",
         "other_views",
         "other_visitors",
+        "tracked",
+        "capped",
     )
 
     def __init__(self):
@@ -399,18 +423,16 @@ class HostDay:
         self.pages = {}
         self.other_views = 0
         self.other_visitors = set()
+        # Entries in visitors, hour_visitors, the paths' sets and other_visitors (see
+        # MAX_DAY_TRACKED), and whether a page view could not add its own under a cap
+        self.tracked = 0
+        self.capped = False
 
-    def page_view(self, hour, visitor, device, path):
+    def page_view(self, hour, visitor, device, path, stats):
+        """Count one page view; stats holds the entries added over the whole run."""
+        # Page views are counted exactly, whether or not the visitor can still be added
         self.page_views += 1
         self.hour_views[hour] += 1
-        if self.hour_visitors is None:
-            self.hour_visitors = [set() for _ in range(24)]
-        self.hour_visitors[hour].add(visitor)
-        # The first hour is the earliest one, whatever order the lines come in: a request
-        # is logged when it ends, and the files are not read in the order they were written.
-        known = self.visitors.get(visitor)
-        if known is None or (known >> 2) > hour:
-            self.visitors[visitor] = hour * 4 + device
         page = None if path is None else self.pages.get(path)
         if page is None and path is not None and len(self.pages) < MAX_DAY_PAGES:
             page = self.pages[path] = [0, set()]
@@ -418,10 +440,33 @@ class HostDay:
             # pagesOther: a path that is not listed, or a new one once the day has
             # MAX_DAY_PAGES of them
             self.other_views += 1
-            self.other_visitors.add(visitor)
+            seen = self.other_visitors
+        else:
+            page[0] += 1
+            seen = page[1]
+        if self.capped:
             return
-        page[0] += 1
-        page[1].add(visitor)
+        if self.hour_visitors is None:
+            self.hour_visitors = [set() for _ in range(24)]
+        hour_seen = self.hour_visitors[hour]
+        known = self.visitors.get(visitor)
+        added = (known is None) + (visitor not in hour_seen) + (visitor not in seen)
+        if not added:
+            return
+        if self.tracked + added > MAX_DAY_TRACKED or stats.tracked + added > MAX_RUN_TRACKED:
+            # From here on the visitors of this day stay as they are (see MAX_DAY_TRACKED)
+            self.capped = True
+            return
+        self.tracked += added
+        stats.tracked += added
+        hour_seen.add(visitor)
+        seen.add(visitor)
+        # The first hour is the earliest one, whatever order the lines come in: a request
+        # is logged when it ends, and the files are not read in the order they were written.
+        # A visitor first seen later is new to this hour's set, so the move comes after the
+        # caps: the hour a visitor is new in is always an hour the visitor is counted in.
+        if known is None or (known >> 2) > hour:
+            self.visitors[visitor] = hour * 4 + device
 
     def result(self):
         """The figures of the day, in the shape of one entry of "days" (counts and paths)."""
@@ -458,6 +503,8 @@ class HostDay:
             ],
             "pagesOther": {"pageViews": other_views, "visitors": len(other_visitors)},
             "devices": dict(zip(DEVICE_KEYS, devices)),
+            # The visitor figures above are lower than they really are (see MAX_DAY_TRACKED)
+            "visitorsCapped": self.capped,
         }
 
 
@@ -472,6 +519,7 @@ def empty_result():
         "pages": [],
         "pagesOther": {"pageViews": 0, "visitors": 0},
         "devices": dict.fromkeys(DEVICE_KEYS, 0),
+        "visitorsCapped": False,
     }
 
 
@@ -493,6 +541,8 @@ class Stats:
         self.unreadable = 0
         self.unrouted = 0
         self.other_hosts = 0
+        # Entries added to tell visitors apart, over every day of the run (MAX_RUN_TRACKED)
+        self.tracked = 0
 
 
 class LogFile:
@@ -714,7 +764,7 @@ def count_line(day, hour, record, stats, hosts, agents):
     if kind == BOT:
         entry.bot_page_views += 1
         return
-    entry.page_view(hour, hash((client, agent)), kind, page_key(path))
+    entry.page_view(hour, hash((client, agent)), kind, page_key(path), stats)
 
 
 # ---- Cache ---------------------------------------------------------------------------
@@ -1031,6 +1081,20 @@ def main(argv=None):
         f"Wrote {len(payloads)} hostname files from {len(cache)} counted days "
         f"(window from {day_name(first)}; removed {removed} old files)"
     )
+    capped = sorted(
+        (index, host)
+        for index, day in days.items()
+        for host, entry in day.hosts.items()
+        if entry.capped
+    )
+    if capped:
+        listed = ", ".join(f"{host} on {day_name(index)}" for index, host in capped[:CAPPED_LISTED])
+        if len(capped) > CAPPED_LISTED:
+            listed += f" and {len(capped) - CAPPED_LISTED} more"
+        print(
+            f"Visitors reached the cap for {len(capped)} of the hostnames' days, written with "
+            f"visitorsCapped (visitor figures low, page views exact): {listed}"
+        )
     return 0
 
 

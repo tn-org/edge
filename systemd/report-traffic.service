@@ -15,11 +15,14 @@ ExecStart=/path/to/edge/scripts/report.sh traffic
 # stay out of the way of the requests being served
 Nice=10
 IOSchedulingClass=idle
-# Visitors are told apart in memory, one set per hostname and day. The cap keeps a run over
-# an unusually large log from pressing on the applications; such a run fails and the
-# failure is reported, instead of the host swapping. MemorySwapMax=0 is what makes it fail:
-# under cgroup v2 the swap of a service is not limited by default, so without it a run over
-# MemoryMax would go on in swap.
+# Visitors are told apart in memory, per hostname and day, up to the caps in
+# traffic_report.py (MAX_DAY_TRACKED and MAX_RUN_TRACKED). They keep a run well under this
+# limit however many made-up User-Agents the log holds: a day over a cap is written with
+# visitorsCapped, and the run succeeds. MemoryMax stays as the last guard, so that a run
+# that grows anyway fails and the failure is reported, instead of pressing on the
+# applications or the host swapping. MemorySwapMax=0 is what makes it fail: under cgroup
+# v2 the swap of a service is not limited by default, so without it a run over MemoryMax
+# would go on in swap.
 MemoryMax=300M
 MemorySwapMax=0
 # The first runs fill in up to 7 earlier days each from the rotated logs

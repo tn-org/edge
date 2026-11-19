@@ -178,8 +178,11 @@ hostname and Japanese day into `sync/state/traffic/<host>.json`. A day that is o
 counted once and kept in `.state/traffic/`; on a host's first runs the earlier days are
 filled in from the rotated logs, at most 7 a run, so a run then takes longer than the
 hourly one that only counts today and yesterday. The unit runs at a low CPU and disk
-priority, with 300 MB of memory, no swap and 30 minutes at most. The rules for each figure
-are under "Contract with the ops console" in `docs/architecture.md`.
+priority, with 300 MB of memory, no swap and 30 minutes at most. The visitors it tells
+apart are capped well under that memory; a day that reaches a cap is written with
+`visitorsCapped` and the run still succeeds, so the memory limit is only the last guard.
+The rules for each figure are under "Contract with the ops console" in
+`docs/architecture.md`.
 
 `edge-update` is the only one disabled by default. It runs only on hosts where somebody
 ran `sudo systemctl enable --now edge-update.timer`. There is no mechanism that deploys to

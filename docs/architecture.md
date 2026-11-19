@@ -102,8 +102,10 @@ The host layer does not call the ops console at all. The contract is one directo
     `coveredUntil`, `computedAt`, `missingHours`, `requests`, `pageViews`, `visitors`,
     `botPageViews`, `hours` (always 24, 00:00 to 23:00, each with `pageViews`, `visitors`
     and `newVisitors`), `pages` (at most 50, most page views first, each with `path`,
-    `pageViews` and `visitors`), `pagesOther` (`pageViews` and `visitors` of the rest)
-    and `devices` (`mobile`, `desktop`, `tablet` and `other`, in visitors).
+    `pageViews` and `visitors`), `pagesOther` (`pageViews` and `visitors` of the rest),
+    `devices` (`mobile`, `desktop`, `tablet` and `other`, in visitors) and
+    `visitorsCapped` (true when the day's visitor figures are lower than they really
+    are, see "Visitor caps" below).
   - Days: a line's `StartUTC`, in Japanese time, decides its day and hour, never the file
     it is in or the host's time zone. The window is today and the 189 days before it. A
     day is `complete` once it has been over for an hour and every log file that may hold
@@ -148,6 +150,18 @@ The host layer does not call the ops console at all. The contract is one directo
     the console refuses) is counted in `pagesOther`, and so is a path first seen after the
     hostname's day already has 5000 paths. Paths are as the client sent them: percent
     encoding is not decoded.
+  - Visitor caps: telling visitors apart takes memory for each of them, and a client can
+    send a new User-Agent with every request, so it is capped. An entry is one visitor
+    added to the visitors of a hostname's day, to those of one of its hours, of one of its
+    listed paths or of `pagesOther`. A hostname's day keeps at most 400,000 entries, and
+    one run at most 1,000,000 over all the hostnames and days it counts. A hostname's day
+    whose page view would go over either cap adds no entry from then on and has
+    `visitorsCapped` true: its `requests`, `pageViews`, `botPageViews` and the page views
+    of its hours and paths are still exact, but `visitors`, the hours' `visitors` and
+    `newVisitors`, the `visitors` of `pages` and `pagesOther` and `devices` are lower
+    than they really are. Once such a day is complete it is kept as it was counted, mark
+    included. The run still succeeds, and its output names the hostnames and days that
+    reached a cap.
   - No client address and no User-Agent is passed on, nor anything derived from them that
     could tell one client from another. Both are read only inside the counting process;
     these files, `.state/traffic/` and the output of the run hold counts and paths only.
